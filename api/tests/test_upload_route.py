@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from io import BytesIO
@@ -41,30 +42,54 @@ class InMemoryObjectStore:
         return {path: f"https://storage.test/{path}?token=abc" for path in paths}
 
 
+def make_record(image_id: int, image: NewImage) -> ImageRecord:
+    return ImageRecord(
+        id=image_id,
+        user_id=image.user_id,
+        filename=image.filename,
+        original_path=image.original_path,
+        thumbnail_path=image.thumbnail_path,
+        mime_type=image.mime_type,
+        size_bytes=image.size_bytes,
+        width=image.width,
+        height=image.height,
+        content_sha256=image.content_sha256,
+        uploaded_at=datetime(2026, 10, 20, 8, 30, tzinfo=UTC),
+        status=AnalysisStatus.PENDING,
+        tags=(),
+        description=None,
+        colors=(),
+        error=None,
+    )
+
+
 class InMemoryImageRepo:
+    """Keeps the caller's images by hash, like the real repo behind RLS.
+
+    A bump moves an image to the front of `order`, the way it does in the gallery.
+    """
+
     def __init__(self) -> None:
         self.inserted: list[NewImage] = []
+        self.by_hash: dict[str, ImageRecord] = {}
+        self.order: list[int] = []
 
     async def insert(self, image: NewImage) -> ImageRecord:
         self.inserted.append(image)
-        return ImageRecord(
-            id=41 + len(self.inserted),
-            user_id=image.user_id,
-            filename=image.filename,
-            original_path=image.original_path,
-            thumbnail_path=image.thumbnail_path,
-            mime_type=image.mime_type,
-            size_bytes=image.size_bytes,
-            width=image.width,
-            height=image.height,
-            content_sha256=image.content_sha256,
-            uploaded_at=datetime(2026, 10, 20, 8, 30, tzinfo=UTC),
-            status=AnalysisStatus.PENDING,
-            tags=(),
-            description=None,
-            colors=(),
-            error=None,
-        )
+        record = make_record(41 + len(self.inserted), image)
+        self.by_hash[image.content_sha256] = record
+        self.order.insert(0, record.id)
+        return record
+
+    async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
+        return {sha: self.by_hash[sha] for sha in sha256s if sha in self.by_hash}
+
+    async def bump(self, image_id: int) -> ImageRecord | None:
+        record = next((r for r in self.by_hash.values() if r.id == image_id), None)
+        if record is not None:
+            self.order.remove(image_id)
+            self.order.insert(0, image_id)
+        return record
 
 
 @pytest.fixture
@@ -312,4 +337,191 @@ def test_an_upload_without_a_valid_token_is_a_401_and_stores_nothing(
 def test_the_upload_is_documented_in_the_openapi_schema(client: TestClient) -> None:
     operation = client.get("/api/openapi.json").json()["paths"][URL]["post"]
 
-    assert set(operation["responses"]) >= {"201", "413", "415", "422"}
+    assert set(operation["responses"]) >= {"200", "201", "413", "415", "422"}
+    for status in ("200", "201"):
+        schema = operation["responses"][status]["content"]["application/json"]["schema"]
+        assert schema == {"$ref": "#/components/schemas/ImageOut"}
+
+
+# --- duplicates ----------------------------------------------------------------------------
+
+
+def another_jpeg() -> bytes:
+    return encode(Image.new("RGB", (320, 200), "crimson"), "JPEG")
+
+
+def test_uploading_a_file_the_caller_already_has_answers_200_with_the_same_image(
+    client: TestClient, repo: InMemoryImageRepo, store: InMemoryObjectStore
+) -> None:
+    first = post_file(client, a_jpeg())
+
+    second = post_file(client, a_jpeg(), "copy-of-beach.jpg")
+
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert second.json() == first.json()
+    assert len(repo.inserted) == 1
+    assert len(store.objects) == 2
+
+
+def test_a_duplicate_upload_moves_the_image_to_the_top(
+    client: TestClient, repo: InMemoryImageRepo
+) -> None:
+    x = post_file(client, a_jpeg(), "x.jpg")
+    y = post_file(client, another_jpeg(), "y.jpg")
+    assert repo.order == [y.json()["id"], x.json()["id"]]
+
+    again = post_file(client, a_jpeg(), "x.jpg")
+
+    assert [x.status_code, y.status_code, again.status_code] == [201, 201, 200]
+    assert again.json()["id"] == x.json()["id"]
+    assert repo.order == [x.json()["id"], y.json()["id"]]
+
+
+def test_a_duplicate_does_not_need_the_thumbnail_to_be_signable(
+    client: TestClient, store: InMemoryObjectStore
+) -> None:
+    post_file(client, a_jpeg())
+    store.fail_signing = True
+
+    response = post_file(client, a_jpeg())
+
+    assert response.status_code == 200
+    assert response.json()["thumbnail_url"] == ""
+
+
+# --- POST /api/v1/images/{id}/bump ---------------------------------------------------------
+
+
+def test_bump_answers_200_with_the_image_and_moves_it_to_the_top(
+    client: TestClient, repo: InMemoryImageRepo
+) -> None:
+    x = post_file(client, a_jpeg()).json()
+    y = post_file(client, another_jpeg()).json()
+
+    response = client.post(f"{URL}/{x['id']}/bump")
+
+    assert response.status_code == 200
+    assert response.json() == x
+    assert response.json()["thumbnail_url"].endswith("/thumb.webp?token=abc")
+    assert repo.order == [x["id"], y["id"]]
+
+
+def test_bumping_a_missing_or_foreign_image_is_a_404_in_the_error_shape(
+    client: TestClient,
+) -> None:
+    response = client.post(f"{URL}/9999/bump")
+
+    assert response.status_code == 404
+    assert response.json() == {"error": {"code": "not_found", "message": "Image not found."}}
+
+
+def test_bump_with_a_non_numeric_id_is_a_422(client: TestClient) -> None:
+    response = client.post(f"{URL}/abc/bump")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+# --- POST /api/v1/images/lookup ------------------------------------------------------------
+
+LOOKUP_URL = f"{URL}/lookup"
+
+
+def sha256_of(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def test_lookup_maps_known_hashes_to_image_ids_and_leaves_out_unknown_ones(
+    client: TestClient,
+) -> None:
+    x = post_file(client, a_jpeg()).json()
+    unknown = "0" * 64
+
+    response = client.post(
+        LOOKUP_URL, json={"content_sha256": [sha256_of(a_jpeg()), unknown, sha256_of(a_jpeg())]}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"matches": {sha256_of(a_jpeg()): x["id"]}}
+
+
+def test_lookup_with_no_matches_is_an_empty_map(client: TestClient) -> None:
+    response = client.post(LOOKUP_URL, json={"content_sha256": ["a" * 64]})
+
+    assert response.status_code == 200
+    assert response.json() == {"matches": {}}
+
+
+def test_lookup_accepts_exactly_50_hashes(client: TestClient) -> None:
+    hashes = [f"{index:064x}" for index in range(50)]
+
+    response = client.post(LOOKUP_URL, json={"content_sha256": hashes})
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "hashes",
+    [
+        [],
+        [f"{index:064x}" for index in range(51)],
+        ["a" * 63],
+        ["a" * 65],
+        ["A" * 64],
+        ["g" * 64],
+        [" " + "a" * 63],
+        ["a" * 64 + "\n"],
+        [123],
+        ["a" * 64, "not a hash"],
+    ],
+    ids=[
+        "empty",
+        "51-items",
+        "too-short",
+        "too-long",
+        "uppercase",
+        "not-hex",
+        "leading-space",
+        "trailing-newline",
+        "not-a-string",
+        "one-bad-among-good",
+    ],
+)
+def test_lookup_rejects_bad_hashes_with_a_422_in_the_error_shape(
+    client: TestClient, hashes: list[Any]
+) -> None:
+    response = client.post(LOOKUP_URL, json={"content_sha256": hashes})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.parametrize("body", [{}, {"hashes": ["a" * 64]}, {"content_sha256": "a" * 64}])
+def test_lookup_rejects_a_malformed_body(client: TestClient, body: dict[str, Any]) -> None:
+    response = client.post(LOOKUP_URL, json=body)
+
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("path", [LOOKUP_URL, f"{URL}/42/bump"])
+def test_lookup_and_bump_without_a_token_are_a_401(
+    make_app: Callable[..., FastAPI], path: str
+) -> None:
+    client = TestClient(make_app(signed_in=False), raise_server_exceptions=False)
+
+    response = client.post(path, json={"content_sha256": ["a" * 64]})
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_lookup_and_bump_are_documented_in_the_openapi_schema(client: TestClient) -> None:
+    paths = client.get("/api/openapi.json").json()["paths"]
+
+    lookup = paths[LOOKUP_URL]["post"]
+    assert set(lookup["responses"]) >= {"200", "422"}
+    assert (
+        lookup["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/LookupResponse"
+    )
+    assert set(paths[f"{URL}/{{image_id}}/bump"]["post"]["responses"]) >= {"200", "404", "422"}
