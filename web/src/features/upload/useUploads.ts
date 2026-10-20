@@ -9,9 +9,9 @@ import type { HashedFile } from "./dropCheck";
 import { moveToTopOfGallery, prependToGallery } from "./galleryCache";
 import { hashFile } from "./hashFile";
 import {
-  DEFAULT_UPLOAD_CONCURRENCY,
   initialUploadQueue,
   nextToStart,
+  uploadConcurrency,
   uploadQueueReducer,
 } from "./uploadQueue";
 import type { UploadItem } from "./uploadQueue";
@@ -35,10 +35,11 @@ export interface Uploads {
 
 /**
  * Runs the upload queue. A drop is hashed first, and the files the user already has are bumped to
- * the top of the gallery instead of uploaded (see `checkDrop`). The rest go out 2 at a time, each
- * with its own AbortController. A finished upload goes into the grid's cache at once and the image
- * lists are refetched. Failures toast the server's message, and finished items clear themselves
- * after 3 s (8 s for a duplicate). Leaving the page aborts whatever is still going.
+ * the top of the gallery instead of uploaded (see `checkDrop`). The rest go out 1 at a time on a
+ * touch device and 2 elsewhere, each with its own AbortController. A finished upload goes into the
+ * grid's cache at once and the image lists are refetched. Failures toast the server's message, and
+ * finished items clear themselves after 3 s (8 s for a duplicate). Leaving the page aborts
+ * whatever is still going.
  */
 export function useUploads(): Uploads {
   const queryClient = useQueryClient();
@@ -164,7 +165,7 @@ export function useUploads(): Uploads {
   // Fills free slots whenever the queue changes. The controllers map guards against starting
   // the same item twice if the effect runs again before the `start` action has been applied.
   useEffect(() => {
-    for (const item of nextToStart(items, DEFAULT_UPLOAD_CONCURRENCY)) {
+    for (const item of nextToStart(items, uploadConcurrency(window))) {
       if (!controllers.current.has(item.id)) startUpload(item);
     }
   }, [items, startUpload]);

@@ -536,3 +536,41 @@ describe("useUploads: files the user already has", () => {
     expect(result.current.items).toHaveLength(0);
   });
 });
+
+describe("useUploads: concurrency", () => {
+  const originalMatchMedia = window.matchMedia;
+
+  function pointerIs(kind: "coarse" | "fine") {
+    window.matchMedia = ((query: string) => ({
+      matches: kind === "coarse" && query === "(pointer: coarse)",
+    })) as typeof window.matchMedia;
+  }
+
+  afterEach(() => {
+    window.matchMedia = originalMatchMedia;
+  });
+
+  it("uploads one file at a time on a touch device, starting the next as each finishes", async () => {
+    pointerIs("coarse");
+    const { result } = setup();
+
+    await drop(result, files(3));
+
+    expect(statuses(result.current.items)).toEqual(["uploading", "queued", "queued"]);
+    expect(pending.map((upload) => upload.file.name)).toEqual(["photo-1.png"]);
+
+    await act(async () => pending[0].resolve(image(1, "photo-1.png")));
+    expect(pending.map((upload) => upload.file.name)).toEqual(["photo-1.png", "photo-2.png"]);
+    await act(async () => pending[1].resolve(image(2, "photo-2.png")));
+    expect(pending).toHaveLength(3);
+  });
+
+  it("uploads two at a time with a mouse", async () => {
+    pointerIs("fine");
+    const { result } = setup();
+
+    await drop(result, files(3));
+
+    expect(statuses(result.current.items)).toEqual(["uploading", "uploading", "queued"]);
+  });
+});

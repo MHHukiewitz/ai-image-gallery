@@ -5,6 +5,23 @@
  */
 export const DEFAULT_UPLOAD_CONCURRENCY = 2;
 
+/**
+ * On a phone the uplink is the bottleneck: parallel uploads split it, and each request ran past
+ * the proxy's read timeout. One at a time keeps every request short.
+ */
+export const TOUCH_UPLOAD_CONCURRENCY = 1;
+
+/** The part of `window` that `uploadConcurrency` reads. Absent where `matchMedia` is (old tests, SSR). */
+export interface UploadEnvironment {
+  matchMedia?: (query: string) => { matches: boolean };
+}
+
+/** How many files to upload at once: 1 when the primary pointer is coarse (a touch device), else 2. */
+export function uploadConcurrency(env: UploadEnvironment): number {
+  const touch = env.matchMedia?.("(pointer: coarse)").matches === true;
+  return touch ? TOUCH_UPLOAD_CONCURRENCY : DEFAULT_UPLOAD_CONCURRENCY;
+}
+
 export type UploadStatus =
   "checking" | "queued" | "uploading" | "done" | "duplicate" | "error" | "canceled";
 
