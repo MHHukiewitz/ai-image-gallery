@@ -1,0 +1,13 @@
+# Keep installed modules, build output, secrets and local tooling out of the build context.
+# npm ci inside the image installs its own node_modules.
+node_modules
+dist
+coverage
+.vite
+*.log
+.env
+.env.*
+playwright-report
+test-results
+Dockerfile
+.dockerignore
