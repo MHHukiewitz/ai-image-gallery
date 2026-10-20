@@ -301,7 +301,7 @@ ai-image-gallery/
 - **Images:** `api` and `worker` share one image and differ only by command. `web` is a multi-stage build: `vite build` with `VITE_*` build args, then `nginx:1.27-alpine`.
 - **Traefik labels:** `Host(gallery.hukiewitz.com)` routes to web:8080 (nginx runs as non-root, so it can't bind :80), and `Host(...) && PathPrefix(/api)` routes to api:8000. Both use `certresolver=le` and `security-headers@file`, the same pattern as `site-hukiewitz`.
 - **Deploy:** `scripts/deploy.sh` rsyncs the repo to `/opt/ai-gallery` (skipping `.env`, `node_modules` and `.venv`), then runs `ssh … docker compose -f deploy/compose.prod.yml up -d --build`. Building on the box avoids cross-compiling from arm64 to amd64. `.env` exists only on the server.
-- **Migrations:** `supabase db push` from the laptop (or CI later). They're never run from containers.
+- **Migrations:** Supabase's GitHub integration deploys every new migration in `supabase/migrations/` to production when it merges to `main` (working directory `.`). CI's `db` job proves a clean apply first. Auth settings are set once in the dashboard, because `config.toml`'s `[auth]` section stays local. Migrations never run from containers.
 - **Keeping Supabase awake:** free-tier Supabase pauses after a week of inactivity. The worker's polling plus an Uptime Kuma check on `/api/health?deep=1` should keep it awake. Otherwise, use Pro for the review window.
 - **Footprint:** about 300 MB of RAM in total.
 

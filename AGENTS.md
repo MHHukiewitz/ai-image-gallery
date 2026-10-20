@@ -4,7 +4,7 @@ These rules apply to every ticket. If your issue contradicts them, follow the is
 
 ## Before you start
 
-1. Read your issue completely, then **docs/architecture.md** (at least the sections your issue cites), then this file.
+1. Read your issue completely, then **docs/architecture.md** (at least the sections your issue cites), then this file. If `gh issue view` prints nothing, which happens in some environments, read the issue with `gh api repos/MHHukiewitz/ai-image-gallery/issues/<n> --jq .body`. Edit PR bodies through `gh api -X PATCH …/pulls/<n> -F body=@file`, and read the result back to check it landed.
 2. Check that every issue listed under **Depends on** is closed. If one is open, stop and report that the ticket is blocked.
 3. Branch from the latest `main` and name it `t<issue>-<short-slug>`, for example `t8-upload-ingest`.
 
@@ -58,6 +58,15 @@ These rules apply to every ticket. If your issue contradicts them, follow the is
 - Tests needing the local Supabase stack are marked `@pytest.mark.integration`.
 - Never call a real AI provider in tests. Use `FakeAnalyzer` or an HTTP mock.
 - Claude code follows the `claude-api` skill: load it before touching `adapters/analyzers/anthropic.py`, and use the official `anthropic` SDK, never an OpenAI-compatible shim.
+
+## Database migrations
+
+**Merging to `main` deploys migrations to the production database** through Supabase's GitHub integration. So:
+
+- **Never edit a merged migration.** Production won't re-run it. Add a new migration instead.
+- **A new migration's filename must sort after every existing one.** Use `supabase migration new <name>`, or the exact filename your issue gives.
+- **Keep migrations additive and backward-compatible.** The running app must keep working before and after each one applies.
+- **Don't put production-only settings in `config.toml`.** Its `[auth]` and `[api]` sections apply to the local stack only.
 
 ## Secrets
 
