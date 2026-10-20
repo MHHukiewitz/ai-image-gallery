@@ -149,6 +149,17 @@ def test_other_color_modes_are_supported(mode: str) -> None:
     assert decode(make_thumbnail(encode(Image.new(mode, (40, 40))))).size == (300, 300)
 
 
+def test_a_16_bit_grayscale_png_keeps_its_brightness() -> None:
+    # Mid-gray in 16 bits. Clipping instead of scaling would make it white.
+    image = Image.new("I;16", (40, 40))
+    image.putdata([60000 if x < 20 else 30000 for _ in range(40) for x in range(40)])
+
+    thumbnail = decode(make_thumbnail(encode(image)))
+
+    assert_color(thumbnail.getpixel((20, 150)), (234, 234, 234))
+    assert_color(thumbnail.getpixel((280, 150)), (117, 117, 117))
+
+
 def test_a_cmyk_jpeg_is_supported() -> None:
     assert decode(make_thumbnail(encode(Image.new("CMYK", (40, 40)), "JPEG"))).mode == "RGB"
 
