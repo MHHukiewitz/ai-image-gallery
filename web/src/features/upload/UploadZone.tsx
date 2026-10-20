@@ -64,7 +64,7 @@ function PageDropTarget({ visible, onDrop }: { visible: boolean; onDrop: DropHan
     >
       <p
         className={clsx(
-          "rounded-2xl border-2 border-dashed px-8 py-6 text-center text-lg font-medium",
+          "rounded-xl border-2 border-dashed px-8 py-6 text-center text-lg font-medium",
           isDragReject
             ? "border-red-500 text-red-700 dark:text-red-400"
             : "border-zinc-900 text-zinc-900 dark:border-zinc-100 dark:text-zinc-100",
@@ -103,8 +103,8 @@ export function UploadZone() {
       <div
         {...getRootProps({
           className: clsx(
-            "rounded-2xl border-2 border-dashed transition-colors",
-            galleryIsEmpty ? "px-6 py-16 text-center" : "px-4 py-3",
+            "rounded-xl border-2 border-dashed motion-safe:transition-colors",
+            galleryIsEmpty ? "px-6 py-16 text-center" : "px-4 py-2.5 sm:py-3",
             highlighted
               ? isDragReject
                 ? "border-red-500 bg-red-50 dark:bg-red-950/30"

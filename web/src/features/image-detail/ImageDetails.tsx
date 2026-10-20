@@ -1,7 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
+import clsx from "clsx";
+
 import { Button } from "../../components/ui/Button";
 import { DialogTitle } from "../../components/ui/Dialog";
+import { FOCUS_COLOR, FOCUS_RING } from "../../components/ui/focusRing";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Spinner } from "../../components/ui/Spinner";
 import { toast } from "../../components/ui/toast";
@@ -59,7 +62,12 @@ export function ImageDetails({ image, onDelete }: ImageDetailsProps) {
                 <button
                   type="button"
                   onClick={() => filterBy({ kind: "text", q: tag })}
-                  className="rounded-full bg-zinc-100 px-3 py-1 text-sm text-zinc-700 hover:bg-zinc-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 dark:focus-visible:outline-zinc-100"
+                  className={clsx(
+                    // 44 px tall on phones; the compact pill from `sm` up.
+                    "inline-flex min-h-11 items-center rounded-full bg-zinc-100 px-3 text-sm text-zinc-700 hover:bg-zinc-200 sm:min-h-7 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700",
+                    FOCUS_RING,
+                    FOCUS_COLOR,
+                  )}
                 >
                   {tag}
                 </button>
@@ -81,7 +89,11 @@ export function ImageDetails({ image, onDelete }: ImageDetailsProps) {
                   type="button"
                   aria-label={`Filter by color ${hex}`}
                   onClick={() => filterBy({ kind: "color", hex })}
-                  className="flex items-center gap-2 rounded-full bg-zinc-100 py-1 pr-3 pl-1 font-mono text-sm text-zinc-700 hover:bg-zinc-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700 dark:focus-visible:outline-zinc-100"
+                  className={clsx(
+                    "flex min-h-11 items-center gap-2 rounded-full bg-zinc-100 pr-3 pl-1 font-mono text-sm text-zinc-700 hover:bg-zinc-200 sm:min-h-7 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700",
+                    FOCUS_RING,
+                    FOCUS_COLOR,
+                  )}
                 >
                   <span
                     aria-hidden="true"
