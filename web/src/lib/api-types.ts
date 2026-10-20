@@ -40,8 +40,51 @@ export interface paths {
          */
         get: operations["list_images_api_v1_images_get"];
         put?: never;
-        /** Upload Image */
+        /**
+         * Upload Image
+         * @description Store an image (201), or bump the caller's existing copy of it to the top (200).
+         */
         post: operations["upload_image_api_v1_images_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/images/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Lookup Images
+         * @description Say which of these content hashes the caller already has an image for.
+         */
+        post: operations["lookup_images_api_v1_images_lookup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/images/{image_id}/bump": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bump Image
+         * @description Move the image to the top of the caller's gallery, as if it had just been uploaded.
+         */
+        post: operations["bump_image_api_v1_images__image_id__bump_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -164,6 +207,24 @@ export interface components {
             /** Next Offset */
             next_offset: number | null;
         };
+        /** LookupRequest */
+        LookupRequest: {
+            /**
+             * Content Sha256
+             * @description SHA-256 of the files' bytes, as 64 lowercase hex characters.
+             */
+            content_sha256: string[];
+        };
+        /** LookupResponse */
+        LookupResponse: {
+            /**
+             * Matches
+             * @description Maps each given hash that matches one of the caller's images to its id.
+             */
+            matches: {
+                [key: string]: number;
+            };
+        };
     };
     responses: never;
     parameters: never;
@@ -261,6 +322,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description The caller already has this image. Nothing was stored; the existing image was moved to the top of their gallery and is returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageOut"];
+                };
+            };
             /** @description Successful Response */
             201: {
                 headers: {
@@ -281,6 +351,79 @@ export interface operations {
             };
             /** @description The file is not a JPEG or PNG. */
             415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Invalid request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    lookup_images_api_v1_images_lookup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LookupRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LookupResponse"];
+                };
+            };
+            /** @description No hashes, more than 50, or a hash that isn't 64 lowercase hex digits. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    bump_image_api_v1_images__image_id__bump_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                image_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageOut"];
+                };
+            };
+            /** @description No image with this id. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
