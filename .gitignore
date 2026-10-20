@@ -1,0 +1,35 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# node
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+
+# e2e
+playwright-report/
+test-results/
+
+# supabase
+supabase/.branches/
+supabase/.temp/
+
+# benchmark inputs are private photos (see #28)
+bench/images/
+
+# os / editors
+.DS_Store
+.idea/
+.vscode/
