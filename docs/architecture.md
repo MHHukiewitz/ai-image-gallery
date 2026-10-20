@@ -175,6 +175,7 @@ ai_cache(content_sha256 char(64), analyzer_id text, result jsonb not null,
 **Search RPCs.** These are `security invoker`:
 
 - `search_images(q, lim, off)`
+- `search_images_semantic(q, q_embedding, lim, off)`
 - `similar_images(image_id, lim, off)`
 - `images_by_color(hex, lim, off)`
 
@@ -248,7 +249,7 @@ All three fit easily within $200 a month for a demo. #6 replaces these estimates
 
 ## 8. Similarity (embeddings in Postgres, no vector DB service)
 
-- **Semantic similarity:** The worker embeds each analyzed image's text, `"{description} Tags: {tag}, {tag}, …"` built from the *final* tags after the verifier, with **BAAI/bge-small-en-v1.5** (MIT, 384 dimensions) through **fastembed**. It runs on the CPU as an ONNX model with no torch. The model is loaded only by the worker, from `/opt/models` where the Docker image put it at build time, so the runtime never downloads it. The vector goes into `image_metadata.embedding` (pgvector, `vector(384)`) and the model's id into `embedding_model`. The vectors live in the same Postgres as the rows they describe, are compared under RLS, and need no index at this scale, so there is no vector database. `dog` now finds `puppy` and `beach` finds `sea`. Embedding is best-effort: a failure logs a warning and the job still ends `done`.
+- **Semantic similarity:** The worker embeds each analyzed image's text, `"{description} Tags: {tag}, {tag}, …"` built from the *final* tags after the verifier, with **BAAI/bge-small-en-v1.5** (MIT, 384 dimensions) through **fastembed**. It runs on the CPU as an ONNX model with no torch. The worker loads the model, and so does the API, but only when a user first runs a text search (see Text search below). Both load it from `/opt/models`, where the Docker image put it at build time, so the runtime never downloads it. The vector goes into `image_metadata.embedding` (pgvector, `vector(384)`) and the model's id into `embedding_model`. The vectors live in the same Postgres as the rows they describe, are compared under RLS, and need no index at this scale, so there is no vector database. `dog` now finds `puppy` and `beach` finds `sea`. Embedding is best-effort: a failure logs a warning and the job still ends `done`.
   `semantic(A, B) = max(0, (cos(A, B) − floor) / (1 − floor))`, where `cos` is the cosine similarity of the two embeddings and **`floor` is 0.65**.
 - **Why a floor:** bge-small compresses its scores into a narrow band, and unrelated texts still score 0.5 to 0.7. Using the raw cosine as a 0..1 score would make every image look 60% similar to every other one. The floor was calibrated against the real model, on word pairs and on description-plus-tags texts for the 11 bench images and 12 ordinary photos (253 pairs, labelled by shared topics):
 
@@ -271,7 +272,33 @@ All three fit easily within $200 a month for a demo. #6 replaces these estimates
 - **Color similarity:** `color_sim(Ct, Cc) = mean over c in Ct of max over d in Cc of (1 − min(ΔE76(c, d), 100) / 100)`. It's computed in CIE Lab, because RGB distance doesn't match how people perceive color. The doc will explain this.
 - **"Find similar":** `score = 0.7 · semantic + 0.3 · color_sim`, with `tag_sim` standing in for `semantic` as described above. It excludes the target and keeps `score > 0.1`, sorted descending.
 - **"Filter by color":** `dist = min over d in Cc of ΔE76(query, d)`. It keeps `dist ≤ 25`, sorted ascending.
-- **Text search:** `search_vector @@ query`, where the query is built from the input tokens with `:*` prefix matching on each token, so results update as you type. Results are ranked by `ts_rank_cd` plus a boost for an exact tag match.
+- **Text search:** there are two functions, and the API picks one per request.
+  - `search_images` matches words. `search_vector @@ query`, where the query is built from the input tokens with `:*` prefix matching on each token, so results update as you type. Results are ranked by `ts_rank_cd` plus a boost for an exact tag match. The API calls it when it has no embedding of the query: `EMBEDDER=none`, or the embedding failed (a `warning` in the log, and the search goes on by words).
+  - `search_images_semantic(q, q_embedding, lim, off)` matches words **and** meaning, so `puppy` finds dog photos and `seaside` finds beaches. An image is a candidate when every word of `q` matches it (as above) **or** `semantic(query, image) ≥ SEMANTIC_MIN`, with `semantic` as defined above. `score = W_TEXT · rank / (rank + 1) + W_SEM · semantic + EXACT_TAG_BOOST`, where `rank` is `ts_rank_cd` (0 without a word match) and the boost is 0.5 when the whole query equals one of the image's tags. It orders ties by newest upload, then id, so pages are stable. Images with no embedding yet still match on words. It is a separate function, because PostgREST can't choose between two overloads that share argument names.
+  - **The query's embedding.** The API embeds `"Tags: {query}"`, the query written as the only tag of an image, which is the format of the stored texts and the one the constants below were calibrated on. It uses `build_embedder`, the same model as the worker. The model loads in a thread on the first text search in the API process (about 0.2 s, and the first request takes about 0.4 s end to end) and stays loaded, so a process that never searches text never imports it. A search that takes more than 10 s to embed gives up and searches by words. The model adds about 165 MiB to the API process, which measured 75 MiB right after startup, 241 MiB after the first text search and 262 MiB after 50 more, 8 at a time, inside the production image with the production 768 MiB limit. `EMBEDDING_MODEL` must be the same in the API and the worker, because the function can't tell whose vectors it compares.
+  - **Calibration.** Run on the real model with 92 photos: the 11 bench images (texts labelled as in #63) and 81 ordinary photos with texts written in the analyzer's style (dogs, beaches, churches, food, night scenes, cars, writing, flowers, and a camera roll's distractors). None comes from production. For each of the 8 queries `puppy`, `seaside`, `church`, `food`, `night`, `red car`, `writing` and `flowers`, every photo is labelled relevant (43 pairs), borderline (33) or irrelevant (660). A bare one-word query scores lower against a photo's text (median 0.695 for relevant photos) than two related photos score against each other (0.85), so the 0.65 floor, set on photo pairs, would zero 19% of the relevant pairs if the query were embedded bare. Writing the query as a tag, in the format of the stored texts, lifts the relevant pairs above the floor with room to rank by, and separates as well: both formats find 81% of the relevant pairs at a 1% false-positive rate.
+
+    | Query to photo cosine | n | median (p10–p90) |
+    |---|---|---|
+    | Relevant, query embedded as `Tags: {query}` | 43 | 0.742 (0.710–0.811) |
+    | Borderline | 33 | 0.680 (0.636–0.736) |
+    | Irrelevant | 660 | 0.619 (0.558–0.676), highest 0.751 |
+    | Relevant, query embedded bare | 43 | 0.695 (0.637–0.749) |
+    | Irrelevant, query embedded bare | 660 | 0.537 (0.485–0.601), highest 0.690 |
+
+    Choosing `SEMANTIC_MIN`, with the query embedded as `Tags: {query}` and the images found by meaning alone:
+
+    | `SEMANTIC_MIN` | Cosine needed | Relevant found | Irrelevant shown | Nonsense queries with results (of 5) |
+    |---|---|---|---|---|
+    | 0.10 | 0.685 | 41 of 43 | 49 (7.4%) | 3 |
+    | 0.15 | 0.703 | 39 | 16 (2.4%) | 0 |
+    | **0.20** | **0.720** | **35** | **7 (1.1%)** | **0** |
+    | 0.25 | 0.738 | 25 | 2 (0.3%) | 0 |
+    | 0.30 | 0.755 | 19 | 0 | 0 |
+
+    The nonsense queries are `xylophone`, `quantum physics`, `spaceship`, `asdfgh` and `tax return`; the highest cosine any of them reached was 0.697. 0.20 is the first value that leaves a margin above that. With the real function (words and meaning), the same 8 queries find 37 of the 43 relevant photos where words alone find 19, and show 8 irrelevant ones (one of them a word match: `car` is a prefix of `carrying`). Per query, relevant photos found by words, by meaning only, and missed: `puppy` 2 / 3 / 1, `seaside` 1 / 4 / 0, `church` 4 / 0 / 0, `food` 1 / 7 / 1, `night` 6 / 0 / 0, `red car` 2 / 0 / 0, `writing` 0 / 1 / 4 (`writing` is the weak one: the stored texts say "handwriting", "text", "calligraphy"), `flowers` 3 / 3 / 0.
+    - **Weights.** A match on one word scores at least 0.29 (`W_TEXT = 1`: in a description alone it has rank 0.4, so 0.4 / 1.4), in a tag 0.5, and an exact tag adds 0.5 on top. A meaning-only match scores at most `W_SEM · 0.57` (cosine 0.85, higher than anything the queries reached), and at most 0.24 in the calibration. So with `W_SEM = 0.5`, an image that has the words ranks above one that has only the meaning, and the meaning orders the images within each group and breaks ties. In 39 of 40 probe queries (single words and phrases) every word match came before every meaning-only match. The exception is a bad word match (`red car` against "…in a red robe… carrying a large wooden cross", scored 0.06), which a blue car found by meaning (0.13) rightly beats.
+    - **Constants.** `SEMANTIC_MIN = 0.20` (`search_semantic_min()`), `W_TEXT = 1.0` (`search_text_weight()`), `W_SEM = 0.5` (`search_semantic_weight()`), all in `20261020000010_semantic_text_search.sql`. They hold for this model and this query text. Changing either means calibrating again.
 
 The weights, the floor and the thresholds are SQL constants at the top of the migrations, each with a one-line comment.
 
