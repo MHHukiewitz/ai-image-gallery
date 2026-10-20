@@ -1,0 +1,50 @@
+# Local stack built from this repo's Dockerfiles: API, worker and the SPA behind nginx.
+# Supabase is not part of this file. Start it with `make dev-db` first. The containers
+# reach it on the host through host.docker.internal.
+# Copy .env.example to .env first. Compose reads it for env_file and for build args.
+name: ai-gallery
+
+x-api: &api
+  build:
+    context: ./api
+  image: ai-gallery-api:local
+  env_file: .env
+  environment:
+    # Inside a container, 127.0.0.1 is the container itself, so point at the host's Supabase.
+    SUPABASE_URL: http://host.docker.internal:54321
+    # The fake analyzer needs no AI key. A value in .env overrides this default.
+    ANALYZER: ${ANALYZER:-fake}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  api:
+    <<: *api
+    restart: unless-stopped
+
+  # Same build as api. The command starts the analysis loop instead of uvicorn. The image's
+  # HEALTHCHECK is turned off because the worker serves no HTTP.
+  worker:
+    <<: *api
+    command: ["python", "-m", "gallery.worker"]
+    healthcheck:
+      disable: true
+    restart: on-failure
+
+  web:
+    build:
+      context: ./web
+      args:
+        # Vite bakes these into the bundle. They are public by design.
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY}
+        VITE_API_BASE: ${VITE_API_BASE:-/api}
+        VITE_USE_MOCKS: ${VITE_USE_MOCKS:-false}
+        VITE_MAX_UPLOAD_MB: ${VITE_MAX_UPLOAD_MB:-10}
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+        VITE_SENTRY_ENVIRONMENT: ${VITE_SENTRY_ENVIRONMENT:-development}
+        VITE_RELEASE: ${VITE_RELEASE:-}
+    image: ai-gallery-web:local
+    ports:
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
