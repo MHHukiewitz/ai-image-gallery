@@ -1,0 +1,773 @@
+{
+  "meta": {
+    "kind": "jev-verification",
+    "source": "openrouter-google-gemini-2.5-flash-lite",
+    "model": "jev-1.14.0",
+    "min_probability": 0.5,
+    "benchmark_timeout_seconds": 30.0,
+    "production_timeout_seconds": 5.0,
+    "recorded_at": "2026-10-20T22:14:06+00:00"
+  },
+  "results": [
+    {
+      "image": "a-single-tear-st-augustine-quote.jpg",
+      "tags": [
+        "jesus",
+        "crucifixion",
+        "religious",
+        "sacrifice",
+        "suffering",
+        "christianity",
+        "passion",
+        "art"
+      ],
+      "probabilities": {
+        "jesus": 0.98,
+        "crucifixion": 0.69,
+        "religious": 0.99,
+        "sacrifice": 0.88,
+        "suffering": 0.97,
+        "christianity": 0.98,
+        "passion": 0.83,
+        "art": 0.97
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "jesus",
+        "crucifixion",
+        "religious",
+        "sacrifice",
+        "suffering",
+        "christianity",
+        "passion",
+        "art"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 410,
+      "input_tokens": 1086,
+      "cost_usd": 4.5612e-05
+    },
+    {
+      "image": "angels-choirs-hierarchy.jpg",
+      "tags": [
+        "angels",
+        "mythology",
+        "religious",
+        "symbolism",
+        "celestial",
+        "hierarchies",
+        "divine",
+        "illustrations"
+      ],
+      "probabilities": {
+        "angels": 0.96,
+        "mythology": 0.89,
+        "religious": 0.98,
+        "symbolism": 0.95,
+        "celestial": 0.9,
+        "hierarchies": 0.85,
+        "divine": 0.95,
+        "illustrations": 0.94
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "angels",
+        "mythology",
+        "religious",
+        "symbolism",
+        "celestial",
+        "hierarchies",
+        "divine",
+        "illustrations"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 411,
+      "input_tokens": 1043,
+      "cost_usd": 4.380600000000001e-05
+    },
+    {
+      "image": "christ-carrying-the-cross-mosaic-via-dolorosa.jpg",
+      "tags": [
+        "jesus",
+        "cross",
+        "mosaic",
+        "religious",
+        "suffering",
+        "passion",
+        "crown of thorns",
+        "bleeding"
+      ],
+      "probabilities": {
+        "jesus": 0.97,
+        "cross": 0.98,
+        "mosaic": 0.98,
+        "religious": 0.99,
+        "suffering": 0.97,
+        "passion": 0.84,
+        "crown of thorns": 0.97,
+        "bleeding": 0.88
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "jesus",
+        "cross",
+        "mosaic",
+        "religious",
+        "suffering",
+        "passion",
+        "crown of thorns",
+        "bleeding"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 359,
+      "input_tokens": 1551,
+      "cost_usd": 6.514200000000001e-05
+    },
+    {
+      "image": "christ-carrying-the-cross.jpg",
+      "tags": [
+        "jesus",
+        "cross",
+        "crown of thorns",
+        "religious art",
+        "suffering",
+        "sacrifice",
+        "painting",
+        "baroque"
+      ],
+      "probabilities": {
+        "jesus": 0.98,
+        "cross": 0.98,
+        "crown of thorns": 0.98,
+        "religious art": 0.99,
+        "suffering": 0.96,
+        "sacrifice": 0.88,
+        "painting": 0.98,
+        "baroque": 0.86
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "jesus",
+        "cross",
+        "crown of thorns",
+        "religious art",
+        "suffering",
+        "sacrifice",
+        "painting",
+        "baroque"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 246,
+      "input_tokens": 1446,
+      "cost_usd": 6.073200000000001e-05
+    },
+    {
+      "image": "christ-cross.jpg",
+      "tags": [
+        "jesus",
+        "cross",
+        "religion",
+        "painting",
+        "suffering",
+        "crown of thorns",
+        "robes"
+      ],
+      "probabilities": {
+        "jesus": 0.97,
+        "cross": 0.97,
+        "religion": 0.98,
+        "painting": 0.98,
+        "suffering": 0.95,
+        "crown of thorns": 0.97,
+        "robes": 0.87
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "jesus",
+        "cross",
+        "religion",
+        "painting",
+        "suffering",
+        "crown of thorns",
+        "robes"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 385,
+      "input_tokens": 1376,
+      "cost_usd": 5.7792e-05
+    },
+    {
+      "image": "crusaders.jpg",
+      "tags": [
+        "knights",
+        "horses",
+        "crusaders",
+        "battle",
+        "medieval",
+        "armor",
+        "crosses",
+        "army",
+        "leadership"
+      ],
+      "probabilities": {
+        "knights": 0.93,
+        "horses": 0.96,
+        "crusaders": 0.96,
+        "battle": 0.5,
+        "medieval": 0.98,
+        "armor": 0.97,
+        "crosses": 0.93,
+        "army": 0.92,
+        "leadership": 0.94
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "knights",
+        "horses",
+        "crusaders",
+        "battle",
+        "medieval",
+        "armor",
+        "crosses",
+        "army",
+        "leadership"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 307,
+      "input_tokens": 1419,
+      "cost_usd": 5.959800000000001e-05
+    },
+    {
+      "image": "immaculate-conception.jpg",
+      "tags": [
+        "virgin mary",
+        "cherubs",
+        "clouds",
+        "serpent",
+        "globe",
+        "divine light",
+        "religious",
+        "renaissance art"
+      ],
+      "probabilities": {
+        "virgin mary": 0.97,
+        "cherubs": 0.91,
+        "clouds": 0.97,
+        "serpent": 0.95,
+        "globe": 0.34,
+        "divine light": 0.96,
+        "religious": 0.98,
+        "renaissance art": 0.71
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "virgin mary",
+        "cherubs",
+        "clouds",
+        "serpent",
+        "divine light",
+        "religious",
+        "renaissance art"
+      ],
+      "merged": [],
+      "dropped": [
+        {
+          "tag": "globe",
+          "probability": 0.34
+        }
+      ],
+      "restored": [],
+      "latency_ms": 284,
+      "input_tokens": 1701,
+      "cost_usd": 7.144200000000001e-05
+    },
+    {
+      "image": "jesus-painting-1.jpeg",
+      "tags": [
+        "shepherd",
+        "sheep",
+        "lamb",
+        "pastoral",
+        "hills",
+        "outdoors",
+        "religious",
+        "hopeful"
+      ],
+      "probabilities": {
+        "shepherd": 0.95,
+        "sheep": 0.99,
+        "lamb": 0.98,
+        "pastoral": 0.96,
+        "hills": 0.95,
+        "outdoors": 0.98,
+        "religious": 0.98,
+        "hopeful": 0.8
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "shepherd",
+        "sheep",
+        "lamb",
+        "pastoral",
+        "hills",
+        "outdoors",
+        "religious",
+        "hopeful"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 484,
+      "input_tokens": 2388,
+      "cost_usd": 0.000100296
+    },
+    {
+      "image": "jesus-painting-2.jpeg",
+      "tags": [
+        "jesus",
+        "shepherd",
+        "lamb",
+        "sheep",
+        "flock",
+        "pastoral",
+        "hills",
+        "golden light",
+        "religious",
+        "hope"
+      ],
+      "probabilities": {
+        "jesus": 0.98,
+        "shepherd": 0.97,
+        "lamb": 0.98,
+        "sheep": 0.99,
+        "flock": 0.95,
+        "pastoral": 0.97,
+        "hills": 0.92,
+        "golden light": 0.97,
+        "religious": 0.99,
+        "hope": 0.66
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "jesus",
+        "shepherd",
+        "lamb",
+        "sheep",
+        "flock",
+        "pastoral",
+        "hills",
+        "golden light",
+        "religious",
+        "hope"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 395,
+      "input_tokens": 2454,
+      "cost_usd": 0.00010306800000000001
+    },
+    {
+      "image": "jesus-painting-3.jpeg",
+      "tags": [
+        "jesus",
+        "religious art",
+        "halo",
+        "painting",
+        "divine",
+        "blessing",
+        "robes",
+        "sacred"
+      ],
+      "probabilities": {
+        "jesus": 0.97,
+        "religious art": 0.99,
+        "halo": 0.97,
+        "painting": 0.97,
+        "divine": 0.97,
+        "blessing": 0.91,
+        "robes": 0.94,
+        "sacred": 0.98
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "jesus",
+        "religious art",
+        "halo",
+        "painting",
+        "divine",
+        "blessing",
+        "robes",
+        "sacred"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 507,
+      "input_tokens": 2688,
+      "cost_usd": 0.000112896
+    },
+    {
+      "image": "lead-us-not-into-temptation-angel-painting.jpg",
+      "tags": [
+        "angel",
+        "horse",
+        "sword",
+        "wings",
+        "divine light",
+        "battle",
+        "sky",
+        "power"
+      ],
+      "probabilities": {
+        "angel": 0.96,
+        "horse": 0.96,
+        "sword": 0.91,
+        "wings": 0.98,
+        "divine light": 0.97,
+        "battle": 0.66,
+        "sky": 0.92,
+        "power": 0.94
+      },
+      "merge_pairs": [],
+      "final_tags": [
+        "angel",
+        "horse",
+        "sword",
+        "wings",
+        "divine light",
+        "battle",
+        "sky",
+        "power"
+      ],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 560,
+      "input_tokens": 2605,
+      "cost_usd": 0.00010941000000000001
+    },
+    {
+      "image": "photo-3d1846cdf44a",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 299,
+      "input_tokens": 2581,
+      "cost_usd": 0.000108402,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-fb7229f1e8e2",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [
+        {
+          "tag": null,
+          "probability": 0.08
+        }
+      ],
+      "restored": [],
+      "latency_ms": 431,
+      "input_tokens": 2611,
+      "cost_usd": 0.00010966200000000001,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-86a3bb590f02",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 370,
+      "input_tokens": 2615,
+      "cost_usd": 0.00010983000000000001,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-4c6699068408",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 439,
+      "input_tokens": 2533,
+      "cost_usd": 0.00010638600000000001,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-068952cfd87a",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 293,
+      "input_tokens": 2126,
+      "cost_usd": 8.9292e-05,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-e6db1d86b560",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 323,
+      "input_tokens": 2606,
+      "cost_usd": 0.00010945200000000001,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-243193ebb252",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [
+        {
+          "tag": null,
+          "probability": 0.45
+        }
+      ],
+      "restored": [],
+      "latency_ms": 297,
+      "input_tokens": 2449,
+      "cost_usd": 0.00010285800000000001,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-64ee06212956",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [
+        {
+          "tag": null,
+          "probability": 0.37
+        }
+      ],
+      "restored": [],
+      "latency_ms": 389,
+      "input_tokens": 1040,
+      "cost_usd": 4.368e-05,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-b509736b2670",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [
+        {
+          "tag": null,
+          "probability": 0.27
+        },
+        {
+          "tag": null,
+          "probability": 0.42
+        }
+      ],
+      "restored": [],
+      "latency_ms": 353,
+      "input_tokens": 2578,
+      "cost_usd": 0.000108276,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-1281e767a202",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 264,
+      "input_tokens": 2646,
+      "cost_usd": 0.000111132,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-b3ca58756adb",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 598,
+      "input_tokens": 2612,
+      "cost_usd": 0.000109704,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-34c515a098f5",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [
+        {
+          "tag": null,
+          "probability": 0.39
+        }
+      ],
+      "restored": [],
+      "latency_ms": 494,
+      "input_tokens": 2611,
+      "cost_usd": 0.00010966200000000001,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-a7332f14c4bb",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 647,
+      "input_tokens": 2611,
+      "cost_usd": 0.00010966200000000001,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-7fd962723bec",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [
+        [
+          null,
+          null
+        ]
+      ],
+      "final_tags": [],
+      "merged": [
+        {
+          "tag": null,
+          "kept": null
+        }
+      ],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 434,
+      "input_tokens": 2195,
+      "cost_usd": 9.219000000000001e-05,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-eb48697aae91",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 496,
+      "input_tokens": 2606,
+      "cost_usd": 0.00010945200000000001,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-1956e6025177",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [
+        {
+          "tag": null,
+          "probability": 0.46
+        }
+      ],
+      "restored": [],
+      "latency_ms": 511,
+      "input_tokens": 2583,
+      "cost_usd": 0.000108486,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-b5061e0d55db",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 372,
+      "input_tokens": 2605,
+      "cost_usd": 0.00010941000000000001,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-f3005191de55",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 380,
+      "input_tokens": 2609,
+      "cost_usd": 0.000109578,
+      "text_withheld": true
+    },
+    {
+      "image": "photo-b734267705a9",
+      "tags": [],
+      "probabilities": {},
+      "merge_pairs": [],
+      "final_tags": [],
+      "merged": [],
+      "dropped": [],
+      "restored": [],
+      "latency_ms": 490,
+      "input_tokens": 2668,
+      "cost_usd": 0.00011205600000000001,
+      "text_withheld": true
+    }
+  ]
+}

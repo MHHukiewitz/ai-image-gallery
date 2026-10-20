@@ -1,0 +1,116 @@
+{
+  "openrouter-anthropic-claude-opus-5.5-effort-low": {
+    "christ-cross.jpg": [
+      {
+        "tag": "dark sky",
+        "verdict": "borderline",
+        "note": "the backdrop is a murky, cloudy dark; `dark background` would have been safer"
+      }
+    ],
+    "photo-068952cfd87a": [
+      {
+        "tag": null,
+        "verdict": "wrong drop",
+        "note": null
+      }
+    ],
+    "photo-34c515a098f5": [
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      }
+    ]
+  },
+  "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+    "christ-cross.jpg": [
+      {
+        "tag": "painting",
+        "verdict": "good merge",
+        "note": "merged into `oil painting`, the more specific tag, and nothing was lost"
+      }
+    ],
+    "photo-86a3bb590f02": [
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      }
+    ],
+    "photo-f3005191de55": [
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      },
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      }
+    ]
+  },
+  "openrouter-google-gemini-2.5-flash-lite": {
+    "immaculate-conception.jpg": [
+      {
+        "tag": "globe",
+        "verdict": "wrong drop",
+        "note": "the figure stands on a globe wound by a serpent"
+      }
+    ],
+    "photo-fb7229f1e8e2": [
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      }
+    ],
+    "photo-243193ebb252": [
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      }
+    ],
+    "photo-64ee06212956": [
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      }
+    ],
+    "photo-b509736b2670": [
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      },
+      {
+        "tag": null,
+        "verdict": "borderline",
+        "note": null
+      }
+    ],
+    "photo-34c515a098f5": [
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      }
+    ],
+    "photo-7fd962723bec": [
+      {
+        "tag": null,
+        "verdict": "good merge",
+        "note": null
+      }
+    ],
+    "photo-1956e6025177": [
+      {
+        "tag": null,
+        "verdict": "correct drop",
+        "note": null
+      }
+    ]
+  }
+}
