@@ -1,0 +1,14 @@
+# Keep secrets, host virtualenvs and test-only files out of the build context.
+# The API image copies only pyproject.toml, uv.lock and src/.
+.env
+.env.*
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+tests
+Dockerfile
+.dockerignore
