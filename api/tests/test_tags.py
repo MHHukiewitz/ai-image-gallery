@@ -83,15 +83,38 @@ def test_description_is_trimmed_and_whitespace_collapsed() -> None:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("A cat sleeps. It looks calm.", "A cat sleeps."),
-        ("Is it a cat? Yes, it is.", "Is it a cat?"),
-        ("What a view! Truly.", "What a view!"),
+        (
+            "A golden retriever sleeps on the sofa. It looks calm.",
+            "A golden retriever sleeps on the sofa.",
+        ),
         ("A cat sleeps on a sofa", "A cat sleeps on a sofa"),
         # A full stop with no space after it is not the end of a sentence.
-        ("A 3.5 metre wave. Big.", "A 3.5 metre wave."),
+        (
+            "The 3.5 metre wave rolls in over the reef. Big.",
+            "The 3.5 metre wave rolls in over the reef.",
+        ),
     ],
 )
 def test_description_keeps_only_the_first_sentence(raw: str, expected: str) -> None:
+    assert normalize_description(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Dogs. A brown dog runs across the grass.", "Dogs. A brown dog runs across the grass."),
+        (
+            "Sunset. Orange light spills over the bay. Gulls wait.",
+            "Sunset. Orange light spills over the bay.",
+        ),
+        # "Dogs and cats play." is 19 characters, which is still short.
+        ("Dogs and cats play. A brown dog runs too.", "Dogs and cats play. A brown dog runs too."),
+        # "Dogs and cats sleep." is 20 characters, which is long enough to stand alone.
+        ("Dogs and cats sleep. A brown dog runs too.", "Dogs and cats sleep."),
+        ("Dogs.", "Dogs."),
+    ],
+)
+def test_short_first_sentence_keeps_the_next_sentence_too(raw: str, expected: str) -> None:
     assert normalize_description(raw) == expected
 
 

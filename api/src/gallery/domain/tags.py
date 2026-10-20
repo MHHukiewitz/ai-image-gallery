@@ -24,6 +24,8 @@ _ABBREVIATIONS = frozenset(
     {"St.", "Mt.", "Dr.", "Mr.", "Mrs.", "Ms.", "Jr.", "Sr.", "vs.", "e.g.", "i.e.", "etc.", "No."}
 )
 _REPEATED_HYPHENS = re.compile(r"-{2,}")
+# A first sentence this short is a fragment such as "Dogs.", so the sentence after it is kept too.
+_MIN_FIRST_SENTENCE_CHARS = 20
 
 
 def normalize_tags(raw: Iterable[str]) -> tuple[str, ...]:
@@ -43,14 +45,18 @@ def normalize_tags(raw: Iterable[str]) -> tuple[str, ...]:
 
 
 def normalize_description(raw: str) -> str:
-    """Trim the text, keep only its first sentence and cap it at `MAX_DESCRIPTION_CHARS`.
+    """Trim the text, keep its first sentence and cap it at `MAX_DESCRIPTION_CHARS`.
 
     A sentence ends at `.`, `!` or `?` followed by a space and an uppercase letter, or at the end
     of the text. The same marks don't end one after an abbreviation or an initial, so
-    "A painting of St. Augustine." stays whole.
+    "A painting of St. Augustine." stays whole. If that first sentence is shorter than
+    `_MIN_FIRST_SENTENCE_CHARS`, the sentence after it is kept too.
     """
     text = " ".join(raw.split())
-    first_sentence = _split_sentences(text)[0]
+    sentences = _split_sentences(text)
+    first_sentence = sentences[0]
+    if len(first_sentence) < _MIN_FIRST_SENTENCE_CHARS and len(sentences) > 1:
+        first_sentence = f"{first_sentence} {sentences[1]}"
     return first_sentence[:MAX_DESCRIPTION_CHARS].rstrip()
 
 
