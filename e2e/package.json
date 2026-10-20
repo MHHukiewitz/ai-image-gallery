@@ -1,0 +1,16 @@
+{
+  "name": "gallery-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "fixtures": "node scripts/generate-fixtures.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}
