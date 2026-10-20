@@ -121,3 +121,48 @@ jobs:
       # Fails when the committed types no longer match the API's schemas.
       - name: Check for drift
         run: git diff --exit-code -- web/src/lib/api-types.ts
+
+  db:
+    needs: detect
+    if: needs.detect.outputs.pgtap == 'true' || needs.detect.outputs.api_integration == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: supabase/setup-cli@v3
+        with:
+          version: 2.121.0
+      # Start only what the tests reach: Auth, PostgREST, Storage and the Kong gateway in front
+      # of them. The other services are excluded. Names are the ones `supabase start --help`
+      # lists for 2.121.0 (inbucket is now mailpit).
+      - name: Start the local stack
+        run: supabase start -x studio,mailpit,imgproxy,edge-runtime,realtime,logflare,vector,supavisor,postgres-meta
+      - name: pgTAP tests
+        if: needs.detect.outputs.pgtap == 'true'
+        run: supabase test db
+      - name: Export local stack keys for the integration tests
+        if: needs.detect.outputs.api_integration == 'true'
+        run: |
+          supabase status -o env > "$RUNNER_TEMP/supabase.env"
+          set -a
+          . "$RUNNER_TEMP/supabase.env"
+          set +a
+          {
+            echo "SUPABASE_URL=${API_URL}"
+            # Newer CLIs print PUBLISHABLE_KEY and SECRET_KEY. Older ones print the ANON and
+            # SERVICE_ROLE names, so fall back to them.
+            echo "SUPABASE_PUBLISHABLE_KEY=${PUBLISHABLE_KEY:-$ANON_KEY}"
+            echo "SUPABASE_SECRET_KEY=${SECRET_KEY:-$SERVICE_ROLE_KEY}"
+            echo "SUPABASE_JWT_SECRET=${JWT_SECRET}"
+          } >> "$GITHUB_ENV"
+      - uses: astral-sh/setup-uv@v10.3.0
+        if: needs.detect.outputs.api_integration == 'true'
+        with:
+          enable-cache: true
+          cache-dependency-glob: api/uv.lock
+      - name: Integration tests
+        if: needs.detect.outputs.api_integration == 'true'
+        working-directory: api
+        run: |
+          uv sync --frozen
+          uv run pytest -m integration
