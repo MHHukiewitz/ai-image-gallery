@@ -107,6 +107,8 @@ async def test_find_by_sha256_asks_image_details_once_with_an_in_filter_newest_f
                 ("in_", ("content_sha256", ["a" * 64, "b" * 64]), {}),
                 ("order", ("last_uploaded_at",), {"desc": True}),
                 ("order", ("id",), {"desc": True}),
+                # The SDK's own retry of a 503 is off: the repo's retry is the only one.
+                ("retry", (False,), {}),
             ],
         )
     ]
@@ -140,21 +142,23 @@ async def test_find_by_sha256_without_hashes_asks_nothing() -> None:
 # --- bump ----------------------------------------------------------------------------------
 
 
-async def test_bump_calls_the_rpc_then_reads_the_image_back() -> None:
-    client = FakePostgrest([detail_row(5, "a" * 64)], rpc_data=True)
+async def test_bump_calls_the_batch_rpc_then_reads_the_image_back() -> None:
+    client = FakePostgrest([detail_row(5, "a" * 64)], rpc_data=[5])
 
     record = await repo_over(client).bump(5)
 
-    assert client.rpcs == [("bump_image", {"p_image_id": 5})]
+    assert client.rpcs == [("bump_images", {"p_image_ids": [5]})]
     assert record is not None
     assert record.id == 5
     [(table, calls)] = client.queries
     assert table == "image_details"
-    assert ("eq", ("id", 5), {}) in calls
+    assert ("in_", ("id", [5]), {}) in calls
 
 
-@pytest.mark.parametrize("answer", [False, None, "true", 1, []], ids=repr)
-async def test_bump_returns_none_unless_the_rpc_answers_exactly_true(answer: Any) -> None:
+@pytest.mark.parametrize(
+    "answer", [[], None, True, False, 1, "5", {"5": 5}, [True], ["5"]], ids=repr
+)
+async def test_bump_returns_none_unless_the_rpc_answers_with_ids(answer: Any) -> None:
     client = FakePostgrest([detail_row(5, "a" * 64)], rpc_data=answer)
 
     assert await repo_over(client).bump(5) is None
@@ -163,10 +167,69 @@ async def test_bump_returns_none_unless_the_rpc_answers_exactly_true(answer: Any
 
 
 async def test_bump_returns_none_when_the_image_cannot_be_read_back() -> None:
-    # image_details hides an image without metadata, so a true answer can still read as missing.
-    client = FakePostgrest([], rpc_data=True)
+    # image_details hides an image without metadata, so a bumped id can still read as missing.
+    client = FakePostgrest([], rpc_data=[5])
 
     assert await repo_over(client).bump(5) is None
+
+
+# --- bump_many -----------------------------------------------------------------------------
+
+
+async def test_bump_many_makes_one_rpc_and_one_read_for_all_the_ids() -> None:
+    rows = [detail_row(image_id, "a" * 64) for image_id in (1, 2, 3)]
+    client = FakePostgrest(rows, rpc_data=[1, 2, 3])
+
+    await repo_over(client).bump_many([1, 2, 3])
+
+    assert client.rpcs == [("bump_images", {"p_image_ids": [1, 2, 3]})]
+    [(table, calls)] = client.queries
+    assert table == "image_details"
+    assert ("in_", ("id", [1, 2, 3]), {}) in calls
+
+
+async def test_bump_many_returns_the_records_in_the_order_the_rpc_bumped_them() -> None:
+    # The read comes back in the table's order; the caller needs the order of the batch, because
+    # the last record is the one on top.
+    rows = [detail_row(1, "a" * 64), detail_row(2, "b" * 64), detail_row(3, "c" * 64)]
+    client = FakePostgrest(rows, rpc_data=[3, 1, 2])
+
+    records = await repo_over(client).bump_many([3, 1, 2])
+
+    assert [record.id for record in records] == [3, 1, 2]
+
+
+async def test_bump_many_leaves_out_ids_the_rpc_skipped() -> None:
+    # 2 belongs to someone else and 9 does not exist, so the RPC returns only 3 and 1.
+    rows = [detail_row(1, "a" * 64), detail_row(3, "c" * 64)]
+    client = FakePostgrest(rows, rpc_data=[3, 1])
+
+    records = await repo_over(client).bump_many([3, 2, 9, 1])
+
+    assert [record.id for record in records] == [3, 1]
+
+
+async def test_bump_many_leaves_out_an_image_that_cannot_be_read_back() -> None:
+    client = FakePostgrest([detail_row(1, "a" * 64)], rpc_data=[1, 2])
+
+    records = await repo_over(client).bump_many([1, 2])
+
+    assert [record.id for record in records] == [1]
+
+
+async def test_bump_many_without_ids_asks_nothing() -> None:
+    client = FakePostgrest([detail_row(1, "a" * 64)], rpc_data=[1])
+
+    assert await repo_over(client).bump_many([]) == []
+    assert client.rpcs == []
+    assert client.queries == []
+
+
+async def test_bump_many_reads_nothing_when_the_rpc_bumped_nothing() -> None:
+    client = FakePostgrest([detail_row(1, "a" * 64)], rpc_data=[])
+
+    assert await repo_over(client).bump_many([1]) == []
+    assert client.queries == []
 
 
 # --- the gallery order ---------------------------------------------------------------------
