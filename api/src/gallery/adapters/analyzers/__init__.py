@@ -1,11 +1,12 @@
 """ImageAnalyzer adapters and the factory that picks one from settings."""
 
+from gallery.adapters.analyzers.anthropic import AnthropicAnalyzer
 from gallery.adapters.analyzers.fake import FakeAnalyzer
 from gallery.adapters.analyzers.openai_compat import OpenAICompatAnalyzer
 from gallery.config import Settings
 from gallery.ports import ImageAnalyzer
 
-__all__ = ["FakeAnalyzer", "OpenAICompatAnalyzer", "build_analyzer"]
+__all__ = ["AnthropicAnalyzer", "FakeAnalyzer", "OpenAICompatAnalyzer", "build_analyzer"]
 
 
 def build_analyzer(settings: Settings) -> ImageAnalyzer:
@@ -20,11 +21,20 @@ def build_analyzer(settings: Settings) -> ImageAnalyzer:
         case "openai_compat":
             return _build_openai_compat(settings)
         case "anthropic":
-            # The native Anthropic adapter is ticket #31.
-            raise NotImplementedError(
-                "ANALYZER=anthropic needs the native Anthropic adapter, which arrives with #31. "
-                "Use ANALYZER=fake or ANALYZER=openai_compat until then."
-            )
+            return _build_anthropic(settings)
+
+
+def _build_anthropic(settings: Settings) -> AnthropicAnalyzer:
+    if not settings.ANTHROPIC_API_KEY:
+        raise ValueError("ANALYZER=anthropic needs ANTHROPIC_API_KEY")
+    if not settings.AI_MODEL:
+        raise ValueError("ANALYZER=anthropic needs AI_MODEL, for example claude-haiku-5-5")
+    return AnthropicAnalyzer(
+        api_key=settings.ANTHROPIC_API_KEY,
+        model=settings.AI_MODEL,
+        effort=settings.AI_EFFORT,
+        timeout=settings.AI_TIMEOUT_SECONDS,
+    )
 
 
 def _build_openai_compat(settings: Settings) -> OpenAICompatAnalyzer:
