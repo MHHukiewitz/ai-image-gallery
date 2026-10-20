@@ -44,6 +44,7 @@ from gallery.domain.models import (
     TextQuery,
 )
 from gallery.ports import ImageRepo
+from gallery.services.gallery import GalleryService
 
 pytestmark = pytest.mark.integration
 
@@ -253,9 +254,35 @@ async def test_search_modes_are_not_implemented_yet(alice: Tenant, query: Galler
         await alice.images.list(query, limit=20, offset=0)
 
 
-async def test_reanalysis_is_not_implemented_yet(alice: Tenant) -> None:
-    with pytest.raises(NotImplementedError):
-        await alice.images.request_reanalysis(1)
+async def test_only_the_owner_can_requeue_an_image(alice: Tenant, bob: Tenant) -> None:
+    inserted = await alice.images.insert(_new_image(alice))
+
+    assert await bob.images.request_reanalysis(inserted.id) is False
+    assert await alice.images.request_reanalysis(inserted.id) is True
+
+
+async def test_reanalysis_of_a_deleted_image_is_refused(alice: Tenant) -> None:
+    inserted = await alice.images.insert(_new_image(alice))
+    await alice.images.delete(inserted.id)
+
+    assert await alice.images.request_reanalysis(inserted.id) is False
+
+
+async def test_deleting_an_image_removes_both_objects_from_storage(alice: Tenant) -> None:
+    new_image = _new_image(alice)
+    inserted = await alice.images.insert(new_image)
+    paths = [new_image.original_path, new_image.thumbnail_path]
+    for path in paths:
+        await alice.objects.put(path, _png(), "image/png")
+    service = GalleryService(alice.images, alice.objects, signed_url_ttl=60)
+
+    await service.delete(inserted.id)
+
+    assert await alice.images.get(inserted.id) is None
+    assert await alice.objects.signed_urls(paths, ttl_seconds=60) == {}
+    for path in paths:
+        with pytest.raises(StorageApiError):
+            await alice.objects.get(path)
 
 
 async def test_objects_round_trip_under_the_owners_folder(alice: Tenant) -> None:

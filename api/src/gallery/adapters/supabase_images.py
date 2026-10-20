@@ -137,4 +137,7 @@ class SupabaseImageRepo:
         return record if response.data else None
 
     async def request_reanalysis(self, image_id: int) -> bool:
-        raise NotImplementedError("request_reanalysis is not implemented yet")
+        """Re-queue the image's analysis. False when it is missing, not the caller's, or running."""
+        response = await self._client.rpc("request_reanalysis", {"p_image_id": image_id}).execute()
+        # The RPC returns a bare boolean. Compare strictly so a surprising payload can't pass.
+        return response.data is True
