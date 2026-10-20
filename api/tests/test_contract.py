@@ -12,7 +12,6 @@ from gallery.api.schemas import AnalysisOut, ImageOut, to_image_out
 from gallery.domain.models import AnalysisStatus, ImageRecord
 
 OWNER_ID = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
-UPLOAD = {"file": ("photo.jpg", b"not-a-real-jpeg", "image/jpeg")}
 
 
 @pytest.fixture
@@ -126,13 +125,6 @@ def test_to_image_out_carries_a_failed_analysis() -> None:
         colors=[],
         error="provider timed out",
     )
-
-
-def test_the_upload_stub_returns_501(client: TestClient) -> None:
-    # The gallery routes are real now. Only upload is still a stub.
-    response = client.post("/api/v1/images", files=UPLOAD)
-
-    assert response.status_code == 501
 
 
 def test_health_returns_ok(client: TestClient) -> None:
