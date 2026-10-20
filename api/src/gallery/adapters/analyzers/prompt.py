@@ -8,7 +8,7 @@ from typing import Any
 
 from gallery.domain.tags import MAX_TAGS, MIN_TAGS
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 SYSTEM_PROMPT = f"""\
 You tag photos for a personal image gallery. For each image, return search tags and a \
@@ -23,7 +23,7 @@ Tags:
 - Use no punctuation except hyphens inside a word.
 
 Description:
-- Write exactly one sentence of at most 25 words saying what the image shows.
+- Write exactly one sentence of at most 20 words saying what the image shows.
 - Be plain and factual. Don't start with "This image shows" or "A photo of".
 - Don't name real people. Describe them by what is visible.
 

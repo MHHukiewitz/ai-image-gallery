@@ -161,7 +161,7 @@ def test_analyzer_id_names_provider_model_and_prompt_version() -> None:
     analyzer = make_analyzer(Provider(completion(reply())))
 
     assert analyzer.analyzer_id == f"openai_compat:test-model:{PROMPT_VERSION}"
-    assert analyzer.analyzer_id == "openai_compat:test-model:v1"
+    assert analyzer.analyzer_id == "openai_compat:test-model:v2"
 
 
 async def test_request_carries_prompt_schema_and_credentials() -> None:
@@ -616,7 +616,7 @@ def test_response_schema_asks_for_five_to_ten_tags_and_a_description() -> None:
 
 
 def test_prompt_states_the_rules_the_normalizers_enforce() -> None:
-    for rule in ("lowercase", "one or two words", "one sentence", "25 words", "5 and 10"):
+    for rule in ("lowercase", "one or two words", "one sentence", "20 words", "5 and 10"):
         assert rule in SYSTEM_PROMPT
 
 
@@ -639,7 +639,7 @@ def test_factory_builds_an_analyzer_from_ai_settings() -> None:
     )
 
     assert isinstance(analyzer, OpenAICompatAnalyzer)
-    assert analyzer.analyzer_id == "openai_compat:llava:v1"
+    assert analyzer.analyzer_id == "openai_compat:llava:v2"
     assert str(analyzer._client.base_url) == "http://ollama.test:11434/v1/"
     assert analyzer._client.timeout == 7.5
     assert analyzer._client.max_retries == 0

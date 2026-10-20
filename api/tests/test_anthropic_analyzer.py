@@ -171,7 +171,7 @@ def test_analyzer_id_names_provider_model_effort_and_prompt_version() -> None:
 
     assert make_analyzer(provider).analyzer_id == f"anthropic:{HAIKU}:low:{PROMPT_VERSION}"
     assert (
-        make_analyzer(provider, SONNET, "high").analyzer_id == "anthropic:claude-sonnet-5-5:high:v1"
+        make_analyzer(provider, SONNET, "high").analyzer_id == "anthropic:claude-sonnet-5-5:high:v2"
     )
 
 
@@ -695,7 +695,7 @@ def test_factory_builds_the_analyzer_from_settings() -> None:
     )
 
     assert isinstance(analyzer, AnthropicAnalyzer)
-    assert analyzer.analyzer_id == "anthropic:claude-sonnet-5-5:medium:v1"
+    assert analyzer.analyzer_id == "anthropic:claude-sonnet-5-5:medium:v2"
     assert analyzer._client.timeout == 7.5
     assert analyzer._client.max_retries == 2
 
