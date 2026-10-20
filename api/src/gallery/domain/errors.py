@@ -33,5 +33,9 @@ class AnalyzerError(GalleryError):
         self.retryable = retryable
 
 
+class TagVerificationError(GalleryError):
+    """The tag verifier couldn't check the tags. The analyzer's tags are kept as they are."""
+
+
 class AuthError(GalleryError):
     """The request has no valid Supabase session."""

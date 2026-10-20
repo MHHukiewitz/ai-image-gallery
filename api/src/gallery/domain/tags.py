@@ -1,13 +1,17 @@
 """Cleanup for model-written tags and descriptions. Pure functions, no I/O."""
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+
+from gallery.domain.models import TagVerdict
 
 MIN_TAGS = 5
 MAX_TAGS = 10
 # The prompt asks for 1-2 words per tag. One extra word is tolerated rather than discarded.
 MAX_TAG_WORDS = 3
 MAX_DESCRIPTION_CHARS = 300
+# One verification asks about at most this many overlapping pairs, to bound the request.
+MAX_MERGE_QUESTIONS = 3
 
 _APOSTROPHES = "'’"
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
@@ -35,6 +39,81 @@ def normalize_description(raw: str) -> str:
     text = " ".join(raw.split())
     first_sentence = _SENTENCE_BREAK.split(text, maxsplit=1)[0]
     return first_sentence[:MAX_DESCRIPTION_CHARS].rstrip()
+
+
+def duplicate_candidates(
+    tags: Sequence[str], *, limit: int = MAX_MERGE_QUESTIONS
+) -> tuple[tuple[str, str], ...]:
+    """Pair up tags that probably say the same thing, such as "house" and "red house".
+
+    Two tags overlap when every word of one is also a word of the other. Each tag joins at most
+    one pair, so no merge depends on another, and at most `limit` pairs come back. A pair lists
+    the tag that comes first in `tags` first.
+    """
+    unique = tuple(dict.fromkeys(tags))
+    words = [frozenset(tag.split()) for tag in unique]
+    paired: set[int] = set()
+    pairs: list[tuple[str, str]] = []
+    for i in range(len(unique)):
+        if len(pairs) >= limit:
+            break
+        if i in paired:
+            continue
+        for j in range(i + 1, len(unique)):
+            if j not in paired and (words[i] <= words[j] or words[j] <= words[i]):
+                pairs.append((unique[i], unique[j]))
+                paired.update((i, j))
+                break
+    return tuple(pairs)
+
+
+def select_tags(
+    tags: Sequence[str],
+    verdict: TagVerdict,
+    *,
+    min_probability: float,
+    min_count: int = MIN_TAGS,
+    max_count: int = MAX_TAGS,
+) -> tuple[str, ...]:
+    """Apply a verifier's verdict to `tags`, keeping between `min_count` and `max_count` of them.
+
+    1. Each merge `(kept, dropped)` removes `dropped`, unless `kept` scored below
+       `min_probability`: that would lose a good tag in favour of a rejected one.
+    2. Tags scored below `min_probability` are removed. A tag without a score stays.
+    3. If fewer than `min_count` tags remain, the removed tags with the highest scores come back.
+       A merged-away duplicate is a true tag, so it returns before a rejected one.
+    4. At most `max_count` tags are kept, the first ones. The original order never changes.
+
+    An empty verdict leaves the tags as they were. When `tags` itself has fewer than `min_count`
+    entries, all of them are returned.
+    """
+    ordered = tuple(dict.fromkeys(tags))
+
+    def probability(tag: str) -> float:
+        # Without a score there is no evidence against the tag, so it sits at the threshold.
+        return verdict.probabilities.get(tag, min_probability)
+
+    merged_away: set[str] = set()
+    for kept, dropped in verdict.merges:
+        if (
+            kept in ordered
+            and dropped in ordered
+            and kept != dropped
+            and kept not in merged_away
+            and dropped not in merged_away
+            and probability(kept) >= min_probability
+        ):
+            merged_away.add(dropped)
+
+    selected = {
+        tag for tag in ordered if tag not in merged_away and probability(tag) >= min_probability
+    }
+    if len(selected) < min_count:
+        removed = [tag for tag in ordered if tag not in selected]
+        # `sorted` is stable, so equal scores keep the analyzer's order.
+        by_score = sorted(removed, key=probability, reverse=True)
+        selected.update(by_score[: min_count - len(selected)])
+    return tuple(tag for tag in ordered if tag in selected)[:max_count]
 
 
 def _clean_tag(raw: str) -> str:
