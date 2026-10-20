@@ -27,6 +27,11 @@ class ImageRepo(Protocol):
     # Moves the image to the top of the caller's gallery. None when it is missing or not theirs.
     async def bump(self, image_id: int) -> ImageRecord | None: ...
 
+    # Moves several images to the top in one call, in the order given: the last id ends up on top.
+    # Returns the records of the images that moved, in that order; an id that is missing or not the
+    # caller's is left out.
+    async def bump_many(self, image_ids: Sequence[int]) -> list[ImageRecord]: ...
+
     async def list(self, query: GalleryQuery, *, limit: int, offset: int) -> Page[ImageRecord]: ...
 
     # Returns the deleted record so the caller can remove its stored objects.
