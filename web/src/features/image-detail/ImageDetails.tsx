@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import clsx from "clsx";
+import { useId } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { DialogTitle } from "../../components/ui/Dialog";
@@ -30,7 +31,9 @@ interface ImageDetailsProps {
 export function ImageDetails({ image, onDelete }: ImageDetailsProps) {
   const { close } = useSelectedImage();
   const [, setQuery] = useGalleryQuery();
+  const hintId = useId();
   const { status, tags, description, colors, error } = image.analysis;
+  const analysisDone = status === "done";
 
   // `replace` reuses the history entry that opened the modal. A push would leave Back reopening
   // the modal over the filtered grid.
@@ -108,18 +111,26 @@ export function ImageDetails({ image, onDelete }: ImageDetailsProps) {
         </section>
       )}
 
-      <div className="flex flex-wrap gap-2 pt-2">
-        <Button
-          variant="secondary"
-          disabled={status !== "done"}
-          title={status === "done" ? undefined : "Available once the analysis is done"}
-          onClick={() => filterBy({ kind: "similar", imageId: image.id })}
-        >
-          Find similar
-        </Button>
-        <Button variant="danger-secondary" onClick={onDelete}>
-          Delete
-        </Button>
+      <div className="flex flex-col gap-2 pt-2">
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            disabled={!analysisDone}
+            // The hint is visible text, so keyboard and screen-reader users get the reason too.
+            aria-describedby={analysisDone ? undefined : hintId}
+            onClick={() => filterBy({ kind: "similar", imageId: image.id })}
+          >
+            Find similar
+          </Button>
+          <Button variant="danger-secondary" onClick={onDelete}>
+            Delete
+          </Button>
+        </div>
+        {!analysisDone && (
+          <p id={hintId} className="text-sm text-zinc-500 dark:text-zinc-400">
+            Available once analysis finishes
+          </p>
+        )}
       </div>
     </div>
   );
