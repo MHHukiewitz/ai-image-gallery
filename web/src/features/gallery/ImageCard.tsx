@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { useState } from "react";
 
+import { FOCUS_COLOR, FOCUS_RING } from "../../components/ui/focusRing";
 import { Spinner } from "../../components/ui/Spinner";
 import type { ImageOut } from "../../lib/api";
 import { useSelectedImage } from "../../lib/galleryQuery";
@@ -29,7 +30,8 @@ export function ImageCard({ image }: ImageCardProps) {
       onClick={() => open(image.id)}
       className={clsx(
         "group relative block aspect-square w-full overflow-hidden rounded-xl bg-zinc-200 text-left dark:bg-zinc-800",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 dark:focus-visible:outline-zinc-100",
+        FOCUS_RING,
+        FOCUS_COLOR,
       )}
     >
       <img
@@ -73,7 +75,7 @@ export function ImageCard({ image }: ImageCardProps) {
           aria-hidden="true"
           className={clsx(
             "absolute inset-x-0 bottom-0 flex max-h-1/2 flex-wrap gap-1 overflow-hidden bg-linear-to-t from-black/75 via-black/40 to-transparent p-2 pt-8",
-            "opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-visible:opacity-100",
+            "opacity-0 motion-safe:transition-opacity motion-safe:duration-200 group-hover:opacity-100 group-focus-visible:opacity-100",
           )}
         >
           {tags.slice(0, TAGS_ON_HOVER).map((tag) => (
