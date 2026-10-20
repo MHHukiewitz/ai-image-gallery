@@ -8,6 +8,7 @@ import pytest
 from PIL import Image
 
 from gallery.domain.colors import dominant_colors
+from gallery.domain.embedding_text import embedding_text
 from gallery.domain.errors import AnalyzerError, TagVerificationError
 from gallery.domain.models import Analysis, AnalysisJob, AnalysisUsage, TagVerdict
 from gallery.services.analysis import (
@@ -43,8 +44,12 @@ def make_job(*, attempts: int = 1, path: str = "u/i/original.png") -> AnalysisJo
 class FakeQueue:
     completed: list[dict[str, object]] = field(default_factory=list)
     failed: list[dict[str, object]] = field(default_factory=list)
+    embeddings: list[tuple[int, tuple[float, ...], str]] = field(default_factory=list)
+    # "complete" and "store_embedding", in the order they were called.
+    events: list[str] = field(default_factory=list)
     complete_error: Exception | None = None
     fail_error: Exception | None = None
+    store_embedding_error: Exception | None = None
 
     async def claim(self, limit: int) -> list[AnalysisJob]:
         raise NotImplementedError
@@ -60,6 +65,7 @@ class FakeQueue:
     ) -> None:
         if self.complete_error:
             raise self.complete_error
+        self.events.append("complete")
         self.completed.append(
             {
                 "image_id": image_id,
@@ -69,6 +75,12 @@ class FakeQueue:
                 "analyzer_id": analyzer_id,
             }
         )
+
+    async def store_embedding(self, image_id: int, vector: Sequence[float], model_id: str) -> None:
+        if self.store_embedding_error:
+            raise self.store_embedding_error
+        self.events.append("store_embedding")
+        self.embeddings.append((image_id, tuple(vector), model_id))
 
     async def fail(
         self, image_id: int, *, error: str, colors: Sequence[str], retryable: bool
@@ -729,3 +741,164 @@ async def test_without_a_verifier_nothing_changes(caplog: pytest.LogCaptureFixtu
         "tags_merged",
     ):
         assert not hasattr(line, name)
+
+
+# --- the optional embedding -------------------------------------------------------------------
+
+EMBEDDER_ID = "test:embedder:v1"
+
+
+@dataclass
+class ScriptedEmbedder:
+    """Returns one fixed vector per text, or raises `error` when one is set, and notes the texts."""
+
+    error: Exception | None = None
+    texts: list[str] = field(default_factory=list)
+
+    @property
+    def model_id(self) -> str:
+        return EMBEDDER_ID
+
+    @property
+    def dimensions(self) -> int:
+        return 3
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        self.texts.extend(texts)
+        if self.error:
+            raise self.error
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+
+def make_embedding_rig(embedder: ScriptedEmbedder, verifier: ScriptedVerifier | None = None) -> Rig:
+    """A rig whose analyzer returns eight tags and whose service has `embedder`."""
+    rig = make_rig()
+    rig.analyzer.result = EIGHT_TAGS
+    rig.service = AnalysisService(
+        rig.queue, rig.store, rig.analyzer, rig.cache, verifier=verifier, embedder=embedder
+    )
+    return rig
+
+
+async def test_the_embedding_of_the_tags_and_description_is_stored_with_the_model_id() -> None:
+    embedder = ScriptedEmbedder()
+    rig = make_embedding_rig(embedder)
+
+    await rig.service.process(make_job())
+
+    assert embedder.texts == [embedding_text(EIGHT_TAGS.tags, EIGHT_TAGS.description)]
+    assert embedder.texts[0].startswith("A red house on a hill. Tags: house, red house")
+    assert rig.queue.embeddings == [(7, (1.0, 0.0, 0.0), EMBEDDER_ID)]
+
+
+async def test_the_embedding_is_stored_after_the_job_completes() -> None:
+    """Completing an analysis drops an embedding that no longer matches, so order matters."""
+    rig = make_embedding_rig(ScriptedEmbedder())
+
+    await rig.service.process(make_job())
+
+    assert rig.queue.events == ["complete", "store_embedding"]
+
+
+async def test_the_embedded_text_uses_the_final_tags_after_the_verifier() -> None:
+    verifier = ScriptedVerifier(TagVerdict(probabilities={"cat": 0.01, "beach": 0.01}))
+    embedder = ScriptedEmbedder()
+    rig = make_embedding_rig(embedder, verifier)
+
+    await rig.service.process(make_job())
+
+    final_tags = stored_tags(rig)
+    assert "cat" not in final_tags
+    assert embedder.texts == [embedding_text(final_tags, EIGHT_TAGS.description)]
+    assert "cat" not in embedder.texts[0]
+
+
+async def test_a_cache_hit_is_embedded_too() -> None:
+    embedder = ScriptedEmbedder()
+    rig = make_embedding_rig(embedder)
+    rig.cache.entries[(SHA, ANALYZER_ID)] = EIGHT_TAGS
+
+    await rig.service.process(make_job())
+
+    assert rig.analyzer.calls == []
+    assert len(rig.queue.embeddings) == 1
+
+
+async def test_an_embedding_failure_keeps_the_job_done(caplog: pytest.LogCaptureFixture) -> None:
+    rig = make_embedding_rig(ScriptedEmbedder(error=RuntimeError("the model file is missing")))
+
+    await rig.service.process(make_job())
+
+    assert len(rig.queue.completed) == 1
+    assert rig.queue.failed == []
+    assert rig.queue.embeddings == []
+    line = job_line(caplog)
+    assert (line.outcome, line.levelno) == ("done", logging.INFO)
+    # A warning, so it does not reach Sentry, with the cause attached.
+    assert worst_level(caplog) == logging.WARNING
+    (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warning.image_id == 7
+    assert warning.exc_info is not None
+    assert warning.exc_info[0] is RuntimeError
+    assert line.embedding_stored is False
+    assert isinstance(line.embedding_ms, int)
+
+
+async def test_a_storing_failure_keeps_the_job_done(caplog: pytest.LogCaptureFixture) -> None:
+    rig = make_embedding_rig(ScriptedEmbedder())
+    rig.queue.store_embedding_error = RuntimeError("the database is gone")
+
+    await rig.service.process(make_job())
+
+    assert len(rig.queue.completed) == 1
+    assert rig.queue.failed == []
+    assert job_line(caplog).outcome == "done"
+    assert worst_level(caplog) == logging.WARNING
+    assert job_line(caplog).embedding_stored is False
+
+
+async def test_the_job_line_reports_the_embedding(caplog: pytest.LogCaptureFixture) -> None:
+    rig = make_embedding_rig(ScriptedEmbedder())
+
+    await rig.service.process(make_job())
+
+    line = job_line(caplog)
+    assert isinstance(line.embedding_ms, int)
+    assert line.embedding_ms >= 0
+    assert line.embedding_stored is True
+
+
+async def test_the_job_line_has_no_embedding_fields_without_an_embedder(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rig = make_rig()
+
+    await rig.service.process(make_job())
+
+    line = job_line(caplog)
+    assert not hasattr(line, "embedding_ms")
+    assert not hasattr(line, "embedding_stored")
+    assert rig.queue.embeddings == []
+
+
+async def test_nothing_is_embedded_when_the_job_fails_to_complete() -> None:
+    embedder = ScriptedEmbedder()
+    rig = make_embedding_rig(embedder)
+    rig.queue.complete_error = RuntimeError("the database is gone")
+
+    await rig.service.process(make_job())
+
+    assert embedder.texts == []
+    assert rig.queue.embeddings == []
+    assert len(rig.queue.failed) == 1
+
+
+async def test_nothing_is_embedded_when_the_analyzer_fails() -> None:
+    embedder = ScriptedEmbedder()
+    rig = make_embedding_rig(embedder)
+    rig.analyzer.error = AnalyzerError("The provider is busy", retryable=True)
+
+    await rig.service.process(make_job())
+
+    assert embedder.texts == []
+    assert rig.queue.embeddings == []

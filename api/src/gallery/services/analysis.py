@@ -18,6 +18,10 @@ any other exception                     ``ERROR``, with the stack trace
 The optional tag verifier is best-effort and never changes that outcome. When it fails, the
 analyzer's tags are stored unchanged and the job still ends ``done``, after a ``WARNING`` for a
 ``TagVerificationError`` or an ``ERROR`` with the stack trace for anything else.
+
+So is the optional embedding of the final tags and description, which "find similar" scores on. The
+image is completed first and embedded after. When that fails, the job still ends ``done`` after a
+``WARNING``, and the image matches on its tags until ``gallery.backfill_embeddings`` fills it in.
 """
 
 import asyncio
@@ -29,10 +33,18 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from gallery.domain.colors import dominant_colors
+from gallery.domain.embedding_text import embedding_text
 from gallery.domain.errors import AnalyzerError, InvalidImageError, TagVerificationError
 from gallery.domain.models import Analysis, AnalysisJob, AnalysisUsage, TagVerdict
 from gallery.domain.tags import select_tags
-from gallery.ports import AnalysisCache, ImageAnalyzer, JobQueue, ObjectStore, TagVerifier
+from gallery.ports import (
+    AnalysisCache,
+    ImageAnalyzer,
+    JobQueue,
+    ObjectStore,
+    TagVerifier,
+    TextEmbedder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +79,17 @@ class _Verification:
         return fields
 
 
+@dataclass(frozen=True, slots=True)
+class _Embedding:
+    """What the embedding stage did for one job, for the job's log line."""
+
+    latency_ms: int
+    stored: bool
+
+    def log_fields(self) -> dict[str, Any]:
+        return {"embedding_ms": self.latency_ms, "embedding_stored": self.stored}
+
+
 class AnalysisService:
     def __init__(
         self,
@@ -78,6 +101,7 @@ class AnalysisService:
         max_attempts: int = 3,
         verifier: TagVerifier | None = None,
         min_tag_probability: float = 0.5,
+        embedder: TextEmbedder | None = None,
     ) -> None:
         """`max_attempts` must match the queue's. It only tells a "retry" from a final "failed"
         in the log line, because the database makes that call.
@@ -85,6 +109,10 @@ class AnalysisService:
         With a `verifier`, the analyzer's tags (cached or fresh) are checked against the image and
         tags it scores below `min_tag_probability` are dropped. The cache keeps the analyzer's
         tags, so the verifier can change or go away without invalidating it.
+
+        With an `embedder`, the final tags and description are embedded after the job completes
+        and the vector is stored on the image. The embedding is never cached, because it follows
+        the final tags.
         """
         self._queue = queue
         self._store = store
@@ -93,6 +121,7 @@ class AnalysisService:
         self._max_attempts = max_attempts
         self._verifier = verifier
         self._min_tag_probability = min_tag_probability
+        self._embedder = embedder
 
     async def process(self, job: AnalysisJob) -> None:
         """Analyze one claimed job and record the result. Never raises (cancellation aside)."""
@@ -100,6 +129,7 @@ class AnalysisService:
         colors: tuple[str, ...] = ()
         analysis: Analysis | None = None
         verification: _Verification | None = None
+        embedding: _Embedding | None = None
         cache_hit = False
         try:
             data = await self._store.get(job.original_path)
@@ -114,6 +144,7 @@ class AnalysisService:
                 colors=colors,
                 analyzer_id=self._analyzer.analyzer_id,
             )
+            embedding = await self._store_embedding(job, tags, analysis.description)
         except InvalidImageError:
             await self._fail(
                 job,
@@ -156,6 +187,7 @@ class AnalysisService:
                 cache_hit,
                 analysis,
                 verification=verification,
+                embedding=embedding,
             )
 
     async def _analysis_for(self, job: AnalysisJob, data: bytes) -> tuple[Analysis, bool]:
@@ -202,6 +234,34 @@ class AnalysisService:
             tags_dropped=dropped,
             tags_merged=merged,
         )
+
+    async def _store_embedding(
+        self, job: AnalysisJob, tags: Sequence[str], description: str
+    ) -> _Embedding | None:
+        """Embed the final text and store the vector. Return what happened (None when skipped).
+
+        This runs after `complete` on purpose: completing an analysis drops an embedding that no
+        longer matches the new text, so a vector stored earlier would be thrown away. It never
+        raises. An embedding only refines "find similar", which falls back to the tags, so a
+        failure here is a warning and the job stays done.
+        """
+        if self._embedder is None:
+            return None
+        text = embedding_text(tags, description)
+        if not text:
+            return None
+        started = time.monotonic()
+        try:
+            [vector] = await self._embedder.embed([text])
+            await self._queue.store_embedding(job.image_id, vector, self._embedder.model_id)
+        except Exception:
+            logger.warning(
+                "embedding failed, the image keeps matching on its tags",
+                exc_info=True,
+                extra={"image_id": job.image_id},
+            )
+            return _Embedding(latency_ms=_elapsed_ms(started), stored=False)
+        return _Embedding(latency_ms=_elapsed_ms(started), stored=True)
 
     # The cache only saves money, so a cache failure must not fail the job: a failed `put` in
     # particular would throw away a paid analysis and pay for it again on the retry.
@@ -275,6 +335,7 @@ class AnalysisService:
         analysis: Analysis | None,
         *,
         verification: _Verification | None = None,
+        embedding: _Embedding | None = None,
         error: str | None = None,
         exception: BaseException | None = None,
     ) -> None:
@@ -299,6 +360,8 @@ class AnalysisService:
             )
         if verification is not None:
             fields.update(verification.log_fields())
+        if embedding is not None:
+            fields.update(embedding.log_fields())
         logger.log(level, message, extra=fields, exc_info=exception)
 
 

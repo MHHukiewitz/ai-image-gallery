@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from typing import Protocol
 
 from gallery.adapters.analyzers import build_analyzer
+from gallery.adapters.embeddings import build_embedder
 from gallery.adapters.supabase_cache import SupabaseAnalysisCache
 from gallery.adapters.supabase_client import close_client, service_client
 from gallery.adapters.supabase_jobs import SupabaseJobQueue
@@ -53,10 +54,11 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     the worker without a signal.
     """
     stop = stop or asyncio.Event()
-    # Built first, so a misconfigured analyzer or verifier stops the worker before it opens any
-    # connection.
+    # Built first, so a misconfigured analyzer, verifier or embedder stops the worker before it
+    # opens any connection.
     analyzer = build_analyzer(settings)
     verifier = build_tag_verifier(settings)
+    embedder = build_embedder(settings)
     client = await service_client(settings)
     try:
         queue = SupabaseJobQueue(
@@ -72,12 +74,14 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
             max_attempts=settings.JOB_MAX_ATTEMPTS,
             verifier=verifier,
             min_tag_probability=settings.TAG_MIN_PROBABILITY,
+            embedder=embedder,
         )
         logger.info(
             "worker started",
             extra={
                 "analyzer_id": analyzer.analyzer_id,
                 "tag_verifier": settings.TAG_VERIFIER,
+                "embedding_model": embedder.model_id if embedder else None,
                 "concurrency": settings.WORKER_CONCURRENCY,
                 "poll_min_seconds": settings.WORKER_POLL_MIN_SECONDS,
                 "poll_max_seconds": settings.WORKER_POLL_MAX_SECONDS,
