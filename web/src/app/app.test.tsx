@@ -1,4 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -12,20 +13,42 @@ vi.mock("react-router/dom", async () => ({
   RouterProvider: (await import("react-router")).RouterProvider,
 }));
 
+// app/ only composes features, so each feature is swapped for a named marker here. These tests
+// then check routing and layout, and a feature's real implementation can never break them.
+const { marker } = vi.hoisted(() => ({
+  marker:
+    (name: string) =>
+    ({ children }: { children?: ReactNode }) => (
+      <div data-feature={name} className="contents">
+        {children ?? name}
+      </div>
+    ),
+}));
+vi.mock("../features/auth/RequireAuth", () => ({ RequireAuth: marker("RequireAuth") }));
+vi.mock("../features/auth/SignInPage", () => ({ SignInPage: marker("SignInPage") }));
+vi.mock("../features/auth/SignUpPage", () => ({ SignUpPage: marker("SignUpPage") }));
+vi.mock("../features/auth/UserMenu", () => ({ UserMenu: marker("UserMenu") }));
+vi.mock("../features/search/SearchBar", () => ({ SearchBar: marker("SearchBar") }));
+vi.mock("../features/upload/UploadZone", () => ({ UploadZone: marker("UploadZone") }));
+vi.mock("../features/gallery/ImageGrid", () => ({ ImageGrid: marker("ImageGrid") }));
+vi.mock("../features/image-detail/ImageModal", () => ({ ImageModal: marker("ImageModal") }));
+
 function renderAt(path: string) {
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   render(<RouterProvider router={router} />);
   return router;
 }
 
-const stubs = () =>
-  Array.from(document.querySelectorAll("[data-stub]")).map((el) => el.getAttribute("data-stub"));
+const features = () =>
+  Array.from(document.querySelectorAll("[data-feature]")).map((el) =>
+    el.getAttribute("data-feature"),
+  );
 
 describe("routes", () => {
-  it("lays out the gallery with the header, search, user menu and every gallery stub", () => {
+  it("lays out the gallery with the header, search, user menu and every gallery feature", () => {
     renderAt("/");
 
-    expect(stubs()).toEqual([
+    expect(features()).toEqual([
       "RequireAuth",
       "SearchBar",
       "UserMenu",
@@ -43,19 +66,19 @@ describe("routes", () => {
 
   it("renders the sign-in and sign-up pages without the layout", () => {
     renderAt("/sign-in");
-    expect(stubs()).toEqual(["SignInPage"]);
+    expect(features()).toEqual(["SignInPage"]);
   });
 
   it("renders sign-up on its own route", () => {
     renderAt("/sign-up");
-    expect(stubs()).toEqual(["SignUpPage"]);
+    expect(features()).toEqual(["SignUpPage"]);
   });
 
   it("redirects unknown paths to the gallery", () => {
     const router = renderAt("/no/such/page");
 
     expect(router.state.location.pathname).toBe("/");
-    expect(stubs()).toContain("ImageGrid");
+    expect(features()).toContain("ImageGrid");
   });
 });
 
@@ -72,7 +95,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(stubs()).toContain("ImageGrid");
+    expect(features()).toContain("ImageGrid");
   });
 });
 
