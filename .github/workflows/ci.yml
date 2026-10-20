@@ -5,6 +5,9 @@ name: CI
 
 on:
   pull_request:
+    # `labeled` is there so that adding the `e2e` label to an open PR starts the e2e job. The
+    # other types are the defaults.
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
 
@@ -190,6 +193,77 @@ jobs:
           push: false
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # The full product against a real stack: Supabase, then the API, worker and web containers from
+  # docker-compose.yml with the fake analyzer, driven by the Playwright suite in e2e/. It takes
+  # minutes, so it runs on main and on PRs that carry the `e2e` label, not on every PR.
+  e2e:
+    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'e2e')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: supabase/setup-cli@v3
+        with:
+          version: 2.121.0
+      # The same service list as the db job: only what the API and the browser reach.
+      - name: Start the local Supabase stack
+        run: supabase start -x studio,mailpit,imgproxy,edge-runtime,realtime,logflare,vector,supavisor,postgres-meta
+      # Compose and the suite both read this file. The values belong to the throwaway stack on this
+      # runner. compose overrides SUPABASE_URL for the containers, so the host keeps 127.0.0.1.
+      - name: Write .env from the stack's keys
+        run: |
+          # Only the KEY=value lines: the CLI also prints a line about the services we skipped.
+          supabase status -o env 2>/dev/null | grep -E '^[A-Z0-9_]+=' > "$RUNNER_TEMP/supabase.env"
+          set -a
+          . "$RUNNER_TEMP/supabase.env"
+          set +a
+          {
+            echo "SUPABASE_URL=${API_URL}"
+            # Newer CLIs print PUBLISHABLE_KEY and SECRET_KEY. Older ones print the ANON and
+            # SERVICE_ROLE names, so fall back to them.
+            echo "SUPABASE_PUBLISHABLE_KEY=${PUBLISHABLE_KEY:-$ANON_KEY}"
+            echo "SUPABASE_SECRET_KEY=${SECRET_KEY:-$SERVICE_ROLE_KEY}"
+            echo "SUPABASE_JWT_SECRET=${JWT_SECRET}"
+            echo "VITE_SUPABASE_URL=${API_URL}"
+            echo "VITE_SUPABASE_PUBLISHABLE_KEY=${PUBLISHABLE_KEY:-$ANON_KEY}"
+            echo "ANALYZER=fake"
+          } > .env
+      - name: Build and start the app
+        run: docker compose up -d --build
+      # Not `up --wait`: the worker has no health check, which `--wait` reports as an error. The
+      # deep check also proves that the API container reaches Supabase.
+      - name: Wait for the API
+        run: curl --fail --silent --show-error --retry 60 --retry-delay 2 --retry-connrefused --retry-all-errors "http://localhost:8080/api/health?deep=1"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - name: Install dependencies
+        working-directory: e2e
+        run: npm ci
+      - name: Type-check
+        working-directory: e2e
+        run: npm run typecheck
+      - name: Install Chromium
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+      - name: Run the suite
+        working-directory: e2e
+        run: npx playwright test
+      - name: Upload the report and traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 7
+      - name: Show the container logs
+        if: failure()
+        run: docker compose logs --no-color --tail 200
 
   secrets:
     runs-on: ubuntu-24.04
