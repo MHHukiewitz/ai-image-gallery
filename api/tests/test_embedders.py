@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
+import onnxruntime
 import pytest
 from fastembed import TextEmbedding
 
@@ -76,6 +77,24 @@ async def test_the_model_loads_on_first_use_with_one_thread_and_the_cache_dir(
     await embedder.embed(["a dog"])
 
     assert model.constructed == [{"model_name": MODEL, "cache_dir": "/opt/models", "threads": 1}]
+
+
+async def test_onnxruntime_telemetry_is_switched_off_before_the_model_loads(
+    monkeypatch: pytest.MonkeyPatch, model: ModelStub
+) -> None:
+    order: list[str] = []
+    monkeypatch.setattr(onnxruntime, "disable_telemetry_events", lambda: order.append("telemetry"))
+    original_init = TextEmbedding.__init__
+
+    def recording_init(this: TextEmbedding, **kwargs: Any) -> None:
+        order.append("model")
+        original_init(this, **kwargs)
+
+    monkeypatch.setattr(TextEmbedding, "__init__", recording_init)
+
+    await make_embedder().embed(["a dog"])
+
+    assert order == ["telemetry", "model"]
 
 
 async def test_the_model_loads_once_per_process(model: ModelStub) -> None:
