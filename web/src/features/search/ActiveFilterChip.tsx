@@ -52,7 +52,7 @@ export function ActiveFilterChip({ query, onClear }: ActiveFilterChipProps) {
     <div
       role="group"
       aria-label="Active filter"
-      className="pointer-events-auto inline-flex h-11 max-w-full items-center gap-2 rounded-full border border-zinc-200 bg-white pr-0 pl-3 text-sm shadow-md sm:h-7 sm:pr-0.5 dark:border-zinc-700 dark:bg-zinc-900"
+      className="inline-flex h-11 max-w-full items-center gap-2 rounded-full border border-zinc-200 bg-white pr-0 pl-3 text-sm shadow-md sm:h-7 sm:pr-0.5 dark:border-zinc-700 dark:bg-zinc-900"
     >
       {isSimilar ? (
         <>

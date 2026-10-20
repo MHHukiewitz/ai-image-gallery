@@ -8,6 +8,7 @@ import { getImage } from "../../lib/api";
 import type { ImagePage } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { makeImage } from "../gallery/testFixtures";
+import { ActiveFilterRow } from "./ActiveFilterRow";
 import { SearchBar } from "./SearchBar";
 import { SPINNER_DELAY_MS } from "./useSearchSpinner";
 import { SEARCH_DEBOUNCE_MS } from "./useSearchText";
@@ -29,6 +30,8 @@ function renderBar(path = "/") {
         element: (
           <>
             <SearchBar />
+            {/* The chip has its own row, rendered beside the bar in the app. */}
+            <ActiveFilterRow />
             <textarea aria-label="Notes" />
           </>
         ),
