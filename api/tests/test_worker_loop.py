@@ -81,6 +81,21 @@ class ScriptedQueue:
         raise NotImplementedError
 
 
+class GatedQueue(ScriptedQueue):
+    """A scripted queue that holds claim number `hold_claim` until the test opens `gate`."""
+
+    def __init__(self, script: list[list[AnalysisJob] | Exception], *, hold_claim: int) -> None:
+        super().__init__(script)
+        self.gate = asyncio.Event()
+        self._hold_claim = hold_claim
+
+    async def claim(self, limit: int) -> list[AnalysisJob]:
+        jobs = await super().claim(limit)
+        if len(self.limits) == self._hold_claim:
+            await self.gate.wait()
+        return jobs
+
+
 class PendingQueue(ScriptedQueue):
     """Hands out up to `limit` jobs from a fixed backlog, like the real queue does."""
 
@@ -120,7 +135,9 @@ def recorded_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     """Replace the loop's sleep with one that only notes how long it was asked to wait."""
     seconds: list[float] = []
 
-    async def record(stop: asyncio.Event, delay: float) -> None:
+    async def record(
+        stop: asyncio.Event, delay: float, *, wake: asyncio.Event | None = None
+    ) -> None:
         seconds.append(delay)
         await asyncio.sleep(0)
 
@@ -298,6 +315,165 @@ async def test_idle_polling_is_slower_than_polling_with_work() -> None:
     # The claim after the job came after only the minimum sleep, far below the 0.8 s it would
     # have waited without the reset.
     assert gaps[4] < 0.3
+
+
+async def test_the_default_poll_settings_never_sleep_more_than_three_seconds(
+    recorded_sleeps: list[float],
+) -> None:
+    settings = Settings()
+    stop = asyncio.Event()
+    queue = ScriptedQueue(on_claim=lambda n: stop.set() if n >= 8 else None)
+
+    await run_loop(
+        queue,
+        RecordingRunner(),
+        stop,
+        poll_min_seconds=settings.WORKER_POLL_MIN_SECONDS,
+        poll_max_seconds=settings.WORKER_POLL_MAX_SECONDS,
+    )
+
+    # An idle queue is polled every second, then every 2 s, then at most every 3 s.
+    assert recorded_sleeps == [1, 2, 3, 3, 3, 3, 3, 3]
+
+
+# --- waking when a job finishes ---------------------------------------------------------------
+# These use a poll interval of a minute. A loop that only wakes on the clock would not claim again
+# within the test's 5 s guard, so a second claim can only come from the job finishing.
+
+
+async def test_a_finished_job_cuts_the_idle_sleep_short() -> None:
+    stop = asyncio.Event()
+    release = asyncio.Event()
+    queue = ScriptedQueue([[make_job(1)]])
+
+    async def work(job: AnalysisJob) -> None:
+        await release.wait()
+
+    runner = RecordingRunner(work)
+    loop_task = asyncio.create_task(
+        run_loop(queue, runner, stop, concurrency=2, poll_min_seconds=60.0, poll_max_seconds=60.0)
+    )
+    await runner.started.reached(1)
+    await asyncio.sleep(TICK)
+    # One job is running, one slot is free, and the loop is asleep for a minute.
+    assert queue.limits == [2]
+
+    release.set()
+    await queue.limits.reached(2)
+
+    # It claims at once, and for both slots again: the job that finished freed its own.
+    assert queue.limits == [2, 2]
+    stop.set()
+    await loop_task
+
+
+async def test_the_claim_after_a_finished_job_asks_for_the_slot_it_freed() -> None:
+    stop = asyncio.Event()
+    release = asyncio.Event()
+    # Two jobs fill the worker, so it waits for a slot. Then the queue holds one more.
+    queue = ScriptedQueue([[make_job(1), make_job(2)], [make_job(3)]])
+
+    async def work(job: AnalysisJob) -> None:
+        if job.image_id in (1, 2):
+            await release.wait()
+
+    runner = RecordingRunner(work)
+    loop_task = asyncio.create_task(
+        run_loop(queue, runner, stop, concurrency=2, poll_min_seconds=60.0, poll_max_seconds=60.0)
+    )
+    await runner.started.reached(2)
+
+    release.set()
+    await runner.finished.reached(3)
+
+    assert queue.limits == [2, 2]
+    stop.set()
+    await loop_task
+
+
+async def test_a_wake_up_that_finds_no_work_goes_back_to_sleep() -> None:
+    stop = asyncio.Event()
+    release = asyncio.Event()
+    queue = ScriptedQueue([[make_job(1)]])
+
+    async def work(job: AnalysisJob) -> None:
+        await release.wait()
+
+    runner = RecordingRunner(work)
+    loop_task = asyncio.create_task(
+        run_loop(queue, runner, stop, poll_min_seconds=60.0, poll_max_seconds=60.0)
+    )
+    await runner.started.reached(1)
+
+    release.set()
+    await queue.limits.reached(2)
+    await asyncio.sleep(10 * TICK)
+
+    # One claim for the wake-up, and then it sleeps again instead of spinning on the flag.
+    assert len(queue.limits) == 2
+    stop.set()
+    await loop_task
+
+
+async def test_a_job_that_finishes_during_a_claim_wakes_the_next_sleep() -> None:
+    stop = asyncio.Event()
+    release_second_job = asyncio.Event()
+    queue = GatedQueue([[make_job(1), make_job(2)]], hold_claim=2)
+
+    async def work(job: AnalysisJob) -> None:
+        if job.image_id == 2:
+            await release_second_job.wait()
+
+    runner = RecordingRunner(work)
+    loop_task = asyncio.create_task(
+        run_loop(queue, runner, stop, concurrency=3, poll_min_seconds=60.0, poll_max_seconds=60.0)
+    )
+    # The first job finishes at once and wakes the loop, whose second claim is held at the gate.
+    await queue.limits.reached(2)
+
+    release_second_job.set()
+    await runner.finished.reached(2)
+    queue.gate.set()
+
+    # The second job ended while the claim was in flight. That must not be lost: the loop claims
+    # a third time without sleeping.
+    await queue.limits.reached(3)
+    stop.set()
+    await loop_task
+
+
+async def test_the_idle_sleep_returns_early_when_woken() -> None:
+    stop = asyncio.Event()
+    wake = asyncio.Event()
+    wake.set()
+
+    await asyncio.wait_for(worker._sleep_or_stop(stop, 60.0, wake=wake), timeout=1.0)
+
+
+async def test_the_idle_sleep_returns_early_when_stopped() -> None:
+    stop = asyncio.Event()
+    stop.set()
+
+    await asyncio.wait_for(worker._sleep_or_stop(stop, 60.0, wake=asyncio.Event()), timeout=1.0)
+
+
+async def test_the_idle_sleep_lasts_the_full_time_without_a_wake_up() -> None:
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+
+    await worker._sleep_or_stop(asyncio.Event(), 0.05, wake=asyncio.Event())
+
+    assert loop.time() - started >= 0.045
+
+
+async def test_the_idle_sleep_leaves_no_waiting_tasks_behind() -> None:
+    wake = asyncio.Event()
+    wake.set()
+
+    await worker._sleep_or_stop(asyncio.Event(), 60.0, wake=wake)
+    await asyncio.sleep(0)
+
+    assert asyncio.all_tasks() == {asyncio.current_task()}
 
 
 # --- claim failures ---------------------------------------------------------------------------
