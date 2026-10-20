@@ -33,3 +33,7 @@ bench/images/
 .DS_Store
 .idea/
 .vscode/
+
+# web tooling
+.vite/
+*.log
