@@ -21,12 +21,13 @@ x-logging: &logging
     max-size: 10m
     max-file: "3"
 
-# The API and the worker share one image. Both services carry the same build section and tag,
-# so `up --build` builds it for the first and reuses the layers for the second.
+# The API and the worker are built from the same Dockerfile and context, so they hold identical
+# layers and differ only by command. Each service has its own image name: with one shared name,
+# Compose builds both in parallel and a cold build can fail when both export the same tag
+# ("image already exists" on the containerd image store). The second build is all cache hits.
 x-backend: &backend
   build:
     context: ../api
-  image: ai-gallery-api:${RELEASE:-prod}
   restart: unless-stopped
   logging: *logging
 
@@ -50,6 +51,7 @@ x-backend-env: &backend-env
 services:
   api:
     <<: *backend
+    image: ai-gallery-api:${RELEASE:-prod}
     mem_limit: 256m
     environment:
       <<: *backend-env
@@ -85,6 +87,7 @@ services:
   # Same image as the API. The command starts the analysis loop instead of uvicorn.
   worker:
     <<: *backend
+    image: ai-gallery-worker:${RELEASE:-prod}
     command: ["python", "-m", "gallery.worker"]
     mem_limit: 512m
     environment:
