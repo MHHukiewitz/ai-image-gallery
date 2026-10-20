@@ -3,10 +3,15 @@
 import logging
 from collections.abc import Callable
 
+import httpx
 import pytest
+import respx
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from gallery.adapters.supabase_client import database_is_reachable
+from gallery.api.deps import get_database_check
+from gallery.config import Settings
 from gallery.domain.errors import (
     AnalyzerError,
     AuthError,
@@ -220,3 +225,107 @@ def test_a_validation_error_is_a_422_in_the_error_shape(
     assert set(body) == {"error"}
     assert body["error"]["code"] == "validation_error"
     assert "limit" in body["error"]["message"]
+
+
+# --- the deep health check -----------------------------------------------------------------
+
+
+def _health_client(app: FastAPI, *, database_answers: bool) -> tuple[TestClient, list[str]]:
+    """Return a client whose database check gives the given answer, and the log of its calls."""
+    calls: list[str] = []
+
+    async def check() -> bool:
+        calls.append("checked")
+        return database_answers
+
+    app.dependency_overrides[get_database_check] = lambda: check
+    return TestClient(app), calls
+
+
+def test_the_shallow_health_check_does_not_touch_the_database(app: FastAPI) -> None:
+    client, calls = _health_client(app, database_answers=False)
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert calls == []
+
+
+def test_the_deep_health_check_reports_a_working_database(app: FastAPI) -> None:
+    client, calls = _health_client(app, database_answers=True)
+
+    response = client.get("/api/health?deep=1")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "db": "ok"}
+    assert calls == ["checked"]
+
+
+def test_the_deep_health_check_answers_503_when_the_database_does_not(app: FastAPI) -> None:
+    client, _ = _health_client(app, database_answers=False)
+
+    response = client.get("/api/health?deep=1")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "error", "db": "error"}
+
+
+def test_the_health_check_leaves_the_openapi_schema_alone(app: FastAPI) -> None:
+    # The web types are generated from the schema, so the deep body must not change it.
+    schema = app.openapi()["components"]["schemas"]["HealthOut"]
+
+    assert set(schema["properties"]) == {"status"}
+
+
+POSTGREST_IMAGES_URL = "http://localhost:54321/rest/v1/images"
+
+
+def _postgrest_error(status_code: int, code: str, message: str) -> httpx.Response:
+    # PostgREST always sends all four fields, and the client only parses the full shape.
+    body = {"code": code, "message": message, "details": None, "hint": None}
+    return httpx.Response(status_code, json=body)
+
+
+@pytest.mark.parametrize(
+    ("reply", "reachable"),
+    [
+        # `anon` has no grants, so a healthy database refuses the query. That's still an answer.
+        (_postgrest_error(401, "42501", "permission denied for table images"), True),
+        (httpx.Response(200, json=[]), True),
+        (_postgrest_error(401, "PGRST301", "JWSError JWSInvalidSignature"), False),
+        (_postgrest_error(503, "PGRST002", "Could not query the database"), False),
+        (_postgrest_error(404, "PGRST205", "Could not find the table"), False),
+        (httpx.Response(502, text="Bad Gateway"), False),
+    ],
+)
+async def test_the_database_check_reads_the_reply(
+    respx_mock: respx.MockRouter, reply: httpx.Response, reachable: bool
+) -> None:
+    respx_mock.get(POSTGREST_IMAGES_URL).mock(return_value=reply)
+    settings = Settings(SUPABASE_URL="http://localhost:54321", SUPABASE_PUBLISHABLE_KEY="test-key")
+
+    assert await database_is_reachable(settings) is reachable
+
+
+async def test_the_database_check_asks_as_the_publishable_key_with_no_user(
+    respx_mock: respx.MockRouter,
+) -> None:
+    route = respx_mock.get(POSTGREST_IMAGES_URL).mock(return_value=httpx.Response(200, json=[]))
+    settings = Settings(SUPABASE_URL="http://localhost:54321", SUPABASE_PUBLISHABLE_KEY="test-key")
+
+    await database_is_reachable(settings)
+
+    headers = route.calls.last.request.headers
+    assert headers["apikey"] == "test-key"
+    assert headers["authorization"] == "Bearer test-key"
+
+
+@pytest.mark.parametrize("failure", [httpx.ConnectError("refused"), httpx.ReadTimeout("hung")])
+async def test_the_database_check_is_false_when_the_database_cannot_be_reached(
+    respx_mock: respx.MockRouter, failure: httpx.HTTPError
+) -> None:
+    respx_mock.get(POSTGREST_IMAGES_URL).mock(side_effect=failure)
+    settings = Settings(SUPABASE_URL="http://localhost:54321", SUPABASE_PUBLISHABLE_KEY="test-key")
+
+    assert await database_is_reachable(settings) is False

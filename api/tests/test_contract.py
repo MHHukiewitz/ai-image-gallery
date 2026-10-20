@@ -7,6 +7,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
+from gallery.api.deps import get_database_check
 from gallery.api.schemas import AnalysisOut, ImageOut, to_image_out
 from gallery.domain.models import AnalysisStatus, ImageRecord
 
@@ -151,6 +152,12 @@ def test_health_returns_ok(client: TestClient) -> None:
 
 
 def test_health_accepts_the_deep_flag(client: TestClient) -> None:
+    async def database_answers() -> bool:
+        return True
+
+    # The deep check queries the database, and this test must not depend on one.
+    client.app.dependency_overrides[get_database_check] = lambda: database_answers
+
     response = client.get("/api/health?deep=1")
 
     assert response.status_code == 200

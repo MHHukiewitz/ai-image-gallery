@@ -24,7 +24,12 @@ from fastapi.security import HTTPAuthorizationCredentials
 from PIL import Image
 from storage3.exceptions import StorageApiError
 
-from gallery.adapters.supabase_client import AsyncClient, close_client, user_client
+from gallery.adapters.supabase_client import (
+    AsyncClient,
+    close_client,
+    database_is_reachable,
+    user_client,
+)
 from gallery.adapters.supabase_images import SupabaseImageRepo
 from gallery.adapters.supabase_storage import SupabaseObjectStore
 from gallery.api import deps
@@ -363,3 +368,40 @@ async def test_the_api_serves_each_user_only_their_own_images(
     assert anonymous.status_code == 401
     assert forged.status_code == 401
     assert forged.json()["error"]["code"] == "unauthorized"
+
+
+# --- the deep health check -----------------------------------------------------------------
+
+
+async def test_the_database_check_reaches_the_local_stack(stack_settings: Settings) -> None:
+    assert await database_is_reachable(stack_settings) is True
+
+
+async def test_the_database_check_fails_for_a_wrong_key(stack_settings: Settings) -> None:
+    wrong_key = stack_settings.model_copy(update={"SUPABASE_PUBLISHABLE_KEY": "not-a-real-key"})
+
+    assert await database_is_reachable(wrong_key) is False
+
+
+async def test_the_database_check_fails_when_nothing_listens(stack_settings: Settings) -> None:
+    nobody_home = stack_settings.model_copy(update={"SUPABASE_URL": "http://127.0.0.1:9"})
+
+    assert await database_is_reachable(nobody_home) is False
+
+
+async def test_the_deep_health_route_is_ok_against_the_local_stack(
+    stack_settings: Settings,
+) -> None:
+    # gallery.main builds the app when it is imported, and that reads the settings. Import it
+    # here, after conftest's autouse fixture has set them, instead of at module level.
+    from gallery.main import create_app
+
+    app = create_app()
+    app.dependency_overrides[deps.get_settings] = lambda: stack_settings
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        response = await http.get("/api/health", params={"deep": 1})
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "db": "ok"}
