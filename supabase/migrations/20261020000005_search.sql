@@ -190,3 +190,30 @@ grant execute on function
   public.color_similarity(float8[], float8[]),
   public.tag_cosine(text[], text[])
   to authenticated, service_role;
+
+-- Derived columns -------------------------------------------------------------------------------
+
+-- Keeps search_vector (tags weigh more than the description) and colors_lab in step with their
+-- sources. It runs as the caller, so it fills the columns for users' inserts and the worker's updates alike.
+create function public.derive_image_metadata() returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.search_vector :=
+    setweight(to_tsvector('english', array_to_string(new.tags, ' ')), 'A')
+    || setweight(to_tsvector('english', coalesce(new.description, '')), 'B');
+  new.colors_lab := public.colors_to_lab(new.colors);
+  return new;
+end;
+$$;
+
+-- Postgres doesn't check EXECUTE when a trigger fires, so no role needs the right to call it.
+revoke all on function public.derive_image_metadata() from public, anon, authenticated, service_role;
+
+create trigger image_metadata_derive
+  before insert or update of tags, description, colors on public.image_metadata
+  for each row execute function public.derive_image_metadata();
+
+-- Fill the derived columns for rows that existed before this migration (a no-op on a fresh database).
+update public.image_metadata set tags = tags;
