@@ -4,6 +4,7 @@ import { Link } from "react-router";
 
 import { FOCUS_COLOR, FOCUS_RING } from "../components/ui/focusRing";
 import { UserMenu } from "../features/auth/UserMenu";
+import { ActiveFilterRow } from "../features/search/ActiveFilterRow";
 import { SearchBar } from "../features/search/SearchBar";
 
 /** Header with the app name, search and user menu, around the page in `children`. */
@@ -57,6 +58,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </div>
       </header>
       <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">
+        <ActiveFilterRow />
         {children}
       </main>
     </div>
