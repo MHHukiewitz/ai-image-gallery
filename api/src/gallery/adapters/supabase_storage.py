@@ -16,17 +16,18 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Sequence
 
-import httpx
 from storage3.exceptions import StorageApiError
 
+from gallery.adapters.retry import (
+    TRANSIENT_NETWORK_ERRORS,
+    TRANSIENT_STATUSES,
+    RetryPolicy,
+    retry_transient,
+)
 from gallery.adapters.supabase_client import AsyncClient
 
 logger = logging.getLogger(__name__)
 
-# 429 is "too many connections"; the 5xx codes are Storage or its database failing for a moment.
-# Everything else, such as 400, 403 and 404, is a request that a retry can't fix.
-_TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
-_TRANSIENT_NETWORK_ERRORS = (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException)
 _MAX_ATTEMPTS = 4
 _BACKOFF_BASE_SECONDS = 0.2
 _BACKOFF_CAP_SECONDS = 2.0
@@ -106,10 +107,10 @@ def _status_of(error: BaseException) -> int | None:
 
 def _transient_reason(error: Exception) -> str | None:
     """Return a short description if retrying `error` could help, else None."""
-    if isinstance(error, _TRANSIENT_NETWORK_ERRORS):
+    if isinstance(error, TRANSIENT_NETWORK_ERRORS):
         return type(error).__name__
     status = _status_of(error)
-    if status in _TRANSIENT_STATUSES:
+    if status in TRANSIENT_STATUSES:
         return str(status)
     return None
 
@@ -194,29 +195,14 @@ class SupabaseObjectStore:
         return urls
 
     async def _with_retries[T](self, operation: str, call: Callable[[], Awaitable[T]]) -> T:
-        """Run `call`, retrying transient Storage errors with exponential backoff and full jitter.
-
-        Full jitter spreads the retries of a burst over the whole backoff window instead of
-        sending them back together, which is what keeps a saturated pool saturated.
-        """
-        for attempt in range(1, _MAX_ATTEMPTS + 1):
-            try:
-                return await call()
-            except Exception as error:
-                reason = _transient_reason(error)
-                if reason is None or attempt == _MAX_ATTEMPTS:
-                    raise
-                delay = self._uniform(
-                    0, min(_BACKOFF_CAP_SECONDS, _BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
-                )
-                logger.warning(
-                    "storage call failed, retrying",
-                    extra={
-                        "operation": operation,
-                        "status": reason,
-                        "attempt": attempt,
-                        "delay_seconds": delay,
-                    },
-                )
-                await self._sleep(delay)
-        raise AssertionError("unreachable: the last attempt returns or raises")
+        """Run `call`, retrying transient Storage errors with backoff and full jitter."""
+        return await retry_transient(
+            call,
+            operation=operation,
+            policy=RetryPolicy(_MAX_ATTEMPTS, _BACKOFF_BASE_SECONDS, _BACKOFF_CAP_SECONDS),
+            transient_reason=_transient_reason,
+            logger=logger,
+            message="storage call failed, retrying",
+            sleep=self._sleep,
+            uniform=self._uniform,
+        )
