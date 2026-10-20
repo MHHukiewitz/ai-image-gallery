@@ -248,7 +248,7 @@ All three fit easily within $200 a month for a demo. #6 replaces these estimates
 
 ## 8. Similarity (cosine, no vector DB)
 
-- **Tag similarity:** `tag_sim(A, B) = |A ∩ B| / sqrt(|A| · |B|)`. This is cosine similarity on binary tag vectors.
+- **Tag similarity:** `tag_sim(A, B) = |A ∩ B| / sqrt(|A| · |B|)`. This is cosine similarity on binary vectors, where A and B are the *word sets* of the two images' tags, not the tag strings. A trigger splits every tag into words, stems them with the `english` text search configuration (stop words drop out) and deduplicates them into `image_metadata.tag_lexemes`. So `house`, `houses` and `red house` overlap, where whole-string matching would score them 0. This is for matching only: `tags` stays exactly as the model wrote it, so compounds such as `hot dog`, `palm tree` and `New York` show intact in the UI and still get the exact-tag boost in text search.
 - **Color similarity:** `color_sim(Ct, Cc) = mean over c in Ct of max over d in Cc of (1 − min(ΔE76(c, d), 100) / 100)`. It's computed in CIE Lab, because RGB distance doesn't match how people perceive color. The doc will explain this.
 - **"Find similar":** `score = 0.7 · tag_sim + 0.3 · color_sim`. It excludes the target and keeps `score > 0.1`, sorted descending.
 - **"Filter by color":** `dist = min over d in Cc of ΔE76(query, d)`. It keeps `dist ≤ 25`, sorted ascending.
