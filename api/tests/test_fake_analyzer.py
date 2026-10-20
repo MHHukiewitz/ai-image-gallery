@@ -3,7 +3,9 @@ import io
 import pytest
 from PIL import Image
 
+from gallery.adapters.analyzers import build_analyzer
 from gallery.adapters.analyzers.fake import FakeAnalyzer
+from gallery.config import Settings
 from gallery.domain.errors import AnalyzerError
 from gallery.domain.tags import MIN_TAGS
 
@@ -120,3 +122,19 @@ async def test_unreadable_bytes_raise_a_non_retryable_error() -> None:
         await FakeAnalyzer().analyze(b"not an image", "image/png")
 
     assert raised.value.retryable is False
+
+
+def test_factory_builds_the_fake_analyzer() -> None:
+    analyzer = build_analyzer(Settings(ANALYZER="fake"))
+
+    assert isinstance(analyzer, FakeAnalyzer)
+    assert analyzer.analyzer_id == "fake:v1"
+
+
+def test_factory_defaults_to_the_fake_analyzer(settings: Settings) -> None:
+    assert isinstance(build_analyzer(settings), FakeAnalyzer)
+
+
+def test_factory_leaves_the_anthropic_adapter_to_ticket_31() -> None:
+    with pytest.raises(NotImplementedError, match="#31"):
+        build_analyzer(Settings(ANALYZER="anthropic", ANTHROPIC_API_KEY="test-key"))
