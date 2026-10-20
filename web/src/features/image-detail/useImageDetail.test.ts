@@ -1,0 +1,52 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { ApiError } from "../../lib/api";
+import type { ImageOut } from "../../lib/api";
+import { analysisRefetchInterval, isAnalyzing, isNotFound } from "./useImageDetail";
+
+vi.mock("../../lib/supabase", () => ({ supabase: { auth: {} } }));
+
+function withStatus(status: ImageOut["analysis"]["status"]): ImageOut {
+  return {
+    id: 1,
+    filename: "beach.jpg",
+    uploaded_at: "2026-10-20T10:00:00Z",
+    width: 1600,
+    height: 1067,
+    thumbnail_url: "https://storage.test/thumb.webp",
+    analysis: { status, tags: [], description: null, colors: [], error: null },
+  };
+}
+
+describe("analysisRefetchInterval", () => {
+  it.each(["pending", "processing"] as const)("polls every 2 s while %s", (status) => {
+    expect(analysisRefetchInterval(withStatus(status))).toBe(2000);
+  });
+
+  it.each(["done", "failed"] as const)("stops polling once %s", (status) => {
+    expect(analysisRefetchInterval(withStatus(status))).toBe(false);
+  });
+
+  it("doesn't poll before the first response", () => {
+    expect(analysisRefetchInterval(undefined)).toBe(false);
+  });
+});
+
+describe("isAnalyzing", () => {
+  it("is true only for pending and processing", () => {
+    expect(isAnalyzing("pending")).toBe(true);
+    expect(isAnalyzing("processing")).toBe(true);
+    expect(isAnalyzing("done")).toBe(false);
+    expect(isAnalyzing("failed")).toBe(false);
+    expect(isAnalyzing(undefined)).toBe(false);
+  });
+});
+
+describe("isNotFound", () => {
+  it("matches only a 404 from the API", () => {
+    expect(isNotFound(new ApiError(404, "not_found", "Image not found."))).toBe(true);
+    expect(isNotFound(new ApiError(500, "http_500", "Something went wrong."))).toBe(false);
+    expect(isNotFound(new Error("network"))).toBe(false);
+    expect(isNotFound(null)).toBe(false);
+  });
+});
