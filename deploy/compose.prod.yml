@@ -52,7 +52,9 @@ services:
   api:
     <<: *backend
     image: ai-gallery-api:${RELEASE:-prod}
-    mem_limit: 256m
+    # 256m was OOM-killed by concurrent phone-photo uploads (2026-10-20): a 12 MP JPEG decodes to
+    # ~36 MB and EXIF rotation copies it. Leave headroom until uploads decode at reduced size.
+    mem_limit: 768m
     environment:
       <<: *backend-env
       SIGNED_URL_TTL_SECONDS: ${SIGNED_URL_TTL_SECONDS:-}
