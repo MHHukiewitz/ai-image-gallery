@@ -10,6 +10,7 @@ import base64
 import io
 import json
 import logging
+from datetime import date
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,14 +21,17 @@ from anthropic import AsyncAnthropic
 from PIL import Image
 
 from gallery.adapters.analyzers import anthropic as anthropic_adapter
+from gallery.adapters.analyzers import build_analyzer
 from gallery.adapters.analyzers.anthropic import AnthropicAnalyzer
 from gallery.adapters.analyzers.images import VISION_MAX_SIDE
+from gallery.adapters.analyzers.pricing import PRICES, PRICING_URL, cost_usd
 from gallery.adapters.analyzers.prompt import (
     PROMPT_VERSION,
     SYSTEM_PROMPT,
     USER_PROMPT,
     repair_prompt,
 )
+from gallery.config import Settings
 from gallery.domain.errors import AnalyzerError
 
 HAIKU = "claude-haiku-5-5"
@@ -644,3 +648,62 @@ async def test_latency_is_the_wall_time_of_the_whole_call_including_the_repair(
 
     assert analysis.usage is not None
     assert analysis.usage.latency_ms == 250
+
+
+# --- price table ---
+
+
+@pytest.mark.parametrize(
+    ("model", "input_price", "output_price"),
+    [(HAIKU, 0.10, 0.50), (SONNET, 2.00, 10.00), (OPUS, 4.00, 20.00)],
+)
+def test_the_benchmarked_models_have_their_list_prices(
+    model: str, input_price: float, output_price: float
+) -> None:
+    price = PRICES[model]
+
+    assert (price.input_usd_per_mtok, price.output_usd_per_mtok) == (input_price, output_price)
+
+
+def test_every_price_names_its_source_and_date() -> None:
+    for price in PRICES.values():
+        assert price.source_url == PRICING_URL
+        assert price.as_of == date(2026, 10, 20)
+
+
+def test_cost_is_priced_per_million_tokens() -> None:
+    assert cost_usd(SONNET, 1_000_000, 1_000_000) == pytest.approx(12.0)
+    assert cost_usd(SONNET, 0, 0) == 0.0
+
+
+def test_an_unknown_model_has_no_cost() -> None:
+    assert cost_usd("claude-test-unknown", 1000, 100) is None
+
+
+# --- factory ---
+
+
+def test_factory_builds_the_analyzer_from_settings() -> None:
+    analyzer = build_analyzer(
+        Settings(
+            ANALYZER="anthropic",
+            ANTHROPIC_API_KEY="test-key",
+            AI_MODEL=SONNET,
+            AI_EFFORT="medium",
+            AI_TIMEOUT_SECONDS=7.5,
+        )
+    )
+
+    assert isinstance(analyzer, AnthropicAnalyzer)
+    assert analyzer.analyzer_id == "anthropic:claude-sonnet-5-5:medium:v1"
+    assert analyzer._client.timeout == 7.5
+    assert analyzer._client.max_retries == 2
+
+
+@pytest.mark.parametrize(
+    ("missing", "overrides"),
+    [("ANTHROPIC_API_KEY", {"AI_MODEL": HAIKU}), ("AI_MODEL", {"ANTHROPIC_API_KEY": "test-key"})],
+)
+def test_factory_names_the_missing_setting(missing: str, overrides: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match=missing):
+        build_analyzer(Settings(ANALYZER="anthropic", **overrides))
