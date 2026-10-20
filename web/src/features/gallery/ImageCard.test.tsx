@@ -203,12 +203,22 @@ describe("ImageCard", () => {
   });
 
   describe("match badge", () => {
-    const badge = () => screen.queryByRole("img", { name: /% match$/ });
+    const badge = () => screen.queryByText(/^\d+%$/);
 
-    it("shows the score as a whole percentage, labelled for screen readers", () => {
+    it("shows the score as a whole percentage, and tells screen readers it's a match", () => {
       renderCard(makeImage(1, {}, { score: 0.874 }), "/", true);
 
-      expect(screen.getByRole("img", { name: "87% match" })).toHaveTextContent("87%");
+      expect(badge()).toHaveTextContent("87%");
+      expect(screen.getByRole("button")).toHaveAccessibleDescription("87% match");
+    });
+
+    it("keeps the tile named after its picture and reads the score as its description", () => {
+      const image = makeImage(1, {}, { score: 0.874 });
+      renderCard(image, "/", true);
+
+      const tile = screen.getByRole("button");
+      expect(tile).toHaveAccessibleName(image.analysis.description ?? image.filename);
+      expect(tile).toHaveAccessibleDescription("87% match");
     });
 
     it("is absent unless the grid asks for it, as in the text and all modes", () => {

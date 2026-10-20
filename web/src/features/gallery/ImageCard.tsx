@@ -33,10 +33,17 @@ export function ImageCard({ image, showMatch = false }: ImageCardProps) {
   // The tile's own background shows the picture's dominant color until the thumbnail has faded in
   // over it, so a loading tile matches its picture instead of being flat gray.
   const placeholderColor = image.analysis.colors[0];
+  // The tile is named after its picture, and the match score is its description. As a child of
+  // the button, the badge would otherwise become part of the name ("… red tones. 87% match").
+  // A plain id: React's useId values contain characters some id lookups don't resolve.
+  const matchId = `image-${image.id}-match`;
+  const name = description || image.filename;
 
   return (
     <button
       type="button"
+      aria-label={name}
+      aria-describedby={matchPercent !== null ? matchId : undefined}
       onClick={() => open(image.id)}
       style={placeholderColor ? { backgroundColor: placeholderColor } : undefined}
       className={clsx(
@@ -48,7 +55,7 @@ export function ImageCard({ image, showMatch = false }: ImageCardProps) {
       {showPlaceholder && <ThumbnailPlaceholder />}
       <img
         src={src}
-        alt={description || image.filename}
+        alt={name}
         loading="lazy"
         decoding="async"
         onLoad={() => setLoaded(true)}
@@ -101,15 +108,20 @@ export function ImageCard({ image, showMatch = false }: ImageCardProps) {
         </span>
       )}
 
-      {/* Last, so it paints over the overlays. The role makes the label the only text read aloud. */}
+      {/* Last, so it paints over the overlays. Screen readers hear the hidden text through the
+          button's aria-describedby, as the tile's description, and skip the visual badge. */}
       {matchPercent !== null && (
-        <span
-          role="img"
-          aria-label={`${matchPercent}% match`}
-          className="absolute top-2 left-2 rounded-full bg-zinc-900/75 px-2.5 py-0.5 text-xs font-medium text-white tabular-nums backdrop-blur-sm"
-        >
-          {matchPercent}%
-        </span>
+        <>
+          <span
+            aria-hidden="true"
+            className="absolute top-2 left-2 rounded-full bg-zinc-900/75 px-2.5 py-0.5 text-xs font-medium text-white tabular-nums backdrop-blur-sm"
+          >
+            {matchPercent}%
+          </span>
+          <span id={matchId} className="sr-only">
+            {matchPercent}% match
+          </span>
+        </>
       )}
     </button>
   );
