@@ -111,10 +111,17 @@ def repo_over(client: FakeRpcClient) -> SupabaseImageRepo:
     ("query", "expected_call"),
     [
         (TextQuery("beach"), ("search_images", {"q": "beach", "lim": 3, "off": 4})),
+        (
+            TextQuery("beach", embedding=(0.25, -0.5)),
+            (
+                "search_images_semantic",
+                {"q": "beach", "q_embedding": [0.25, -0.5], "lim": 3, "off": 4},
+            ),
+        ),
         (SimilarTo(7), ("similar_images", {"target_id": 7, "lim": 3, "off": 4})),
         (ColorQuery("#336699"), ("images_by_color", {"hex": "#336699", "lim": 3, "off": 4})),
     ],
-    ids=["text", "similar", "color"],
+    ids=["text", "text-with-embedding", "similar", "color"],
 )
 async def test_each_search_mode_calls_its_rpc_for_one_row_more_than_the_page(
     query: GalleryQuery, expected_call: tuple[str, dict[str, Any]]
@@ -136,6 +143,15 @@ async def test_a_full_page_with_an_extra_row_has_a_next_offset() -> None:
 
     assert [item.id for item in page.items] == [3, 2]
     assert page.next_offset == 6
+
+
+async def test_a_semantic_text_search_pages_like_any_other() -> None:
+    client = FakeRpcClient([search_row(3), search_row(2), search_row(1)])
+
+    page = await repo_over(client).list(TextQuery("puppy", embedding=(1.0, 0.0)), limit=2, offset=2)
+
+    assert [item.id for item in page.items] == [3, 2]
+    assert page.next_offset == 4
 
 
 async def test_the_last_page_has_no_next_offset() -> None:
