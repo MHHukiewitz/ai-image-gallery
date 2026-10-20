@@ -1,0 +1,72 @@
+name: CI
+
+# This workflow is the merge gate for every PR. Jobs whose inputs are not in the tree yet are
+# skipped, not failed, so the gate stays green while the tickets that add those inputs are open.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The built-in token only needs to read the code. No repository secrets are required.
+permissions:
+  contents: read
+
+# A newer push to the same ref makes the run in progress obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: api/uv.lock
+      - name: Install dependencies
+        working-directory: api
+        run: uv sync --frozen
+      - name: Ruff check
+        working-directory: api
+        run: uv run ruff check .
+      - name: Ruff format check
+        working-directory: api
+        run: uv run ruff format --check .
+      - name: Unit tests
+        working-directory: api
+        run: uv run pytest -m "not integration"
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # The only values the browser bundle may receive. Both are public by design. These
+      # placeholders keep the build away from any real project.
+      VITE_SUPABASE_URL: http://127.0.0.1:54321
+      VITE_SUPABASE_PUBLISHABLE_KEY: ci-placeholder-key
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+      - name: Type-check
+        working-directory: web
+        run: npm run typecheck
+      - name: Unit tests
+        working-directory: web
+        run: npm run test -- --run
+      - name: Build
+        working-directory: web
+        run: npm run build
