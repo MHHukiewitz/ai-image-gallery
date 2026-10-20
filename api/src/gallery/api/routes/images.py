@@ -5,11 +5,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Response
 from fastapi.exceptions import RequestValidationError
 
-from gallery.api.deps import get_image_repo, get_object_store, get_settings
+from gallery.api.deps import get_image_repo, get_object_store, get_query_embedder, get_settings
 from gallery.api.schemas import ErrorResponse, ImageOut, ImagePage, to_image_out
 from gallery.config import Settings
 from gallery.domain.models import AllImages, ColorQuery, GalleryQuery, SimilarTo, TextQuery
-from gallery.ports import ImageRepo, ObjectStore
+from gallery.ports import ImageRepo, ObjectStore, TextEmbedder
 from gallery.services.gallery import GalleryService
 
 router = APIRouter()
@@ -21,8 +21,11 @@ def get_gallery_service(
     images: Annotated[ImageRepo, Depends(get_image_repo)],
     objects: Annotated[ObjectStore, Depends(get_object_store)],
     settings: Annotated[Settings, Depends(get_settings)],
+    embedder: Annotated[TextEmbedder | None, Depends(get_query_embedder)],
 ) -> GalleryService:
-    return GalleryService(images, objects, signed_url_ttl=settings.SIGNED_URL_TTL_SECONDS)
+    return GalleryService(
+        images, objects, signed_url_ttl=settings.SIGNED_URL_TTL_SECONDS, embedder=embedder
+    )
 
 
 def _gallery_query(q: str | None, similar_to: int | None, color: str | None) -> GalleryQuery:

@@ -4,8 +4,10 @@ Every database and storage call carries the user's JWT, so RLS is the authorizat
 module never touches the secret key.
 """
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache, partial
 from typing import Annotated, Any
@@ -17,6 +19,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from gallery import config
+from gallery.adapters.embeddings import DATABASE_DIMENSIONS, build_embedder
 from gallery.adapters.supabase_client import (
     AsyncClient,
     close_client,
@@ -27,7 +30,7 @@ from gallery.adapters.supabase_images import SupabaseImageRepo
 from gallery.adapters.supabase_storage import SupabaseObjectStore
 from gallery.config import Settings
 from gallery.domain.errors import AuthError
-from gallery.ports import ImageRepo, ObjectStore
+from gallery.ports import ImageRepo, ObjectStore, TextEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +146,64 @@ async def get_object_store(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ObjectStore:
     return SupabaseObjectStore(client, settings.STORAGE_BUCKET)
+
+
+class LazyEmbedder:
+    """A TextEmbedder that builds the real one when it is first asked to embed.
+
+    Most API requests never touch the model, so the process imports fastembed (and with it
+    onnxruntime) and loads the model on the first text search instead of at startup. Both happen
+    in a thread, so the event loop keeps serving. A failed build isn't remembered: the next
+    search tries again, and the service falls back to words only meanwhile.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._embedder: TextEmbedder | None = None
+        self._build_lock = threading.Lock()
+
+    @property
+    def model_id(self) -> str:
+        return self._settings.EMBEDDING_MODEL
+
+    @property
+    def dimensions(self) -> int:
+        # build_embedder refuses a model with any other size.
+        return DATABASE_DIMENSIONS
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        embedder = self._embedder
+        if embedder is None:
+            embedder = await asyncio.to_thread(self._build)
+        return await embedder.embed(texts)
+
+    def _build(self) -> TextEmbedder:
+        with self._build_lock:
+            if self._embedder is None:
+                built = build_embedder(self._settings)
+                if built is None:
+                    raise ValueError("EMBEDDER=none builds no embedder")
+                self._embedder = built
+            return self._embedder
+
+
+# One per model setting, for the life of the process, so the model is loaded once.
+_query_embedders: dict[tuple[str, str, str], LazyEmbedder] = {}
+
+
+async def get_query_embedder(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TextEmbedder | None:
+    """Return the embedder for text search, or None when `EMBEDDER` is "none".
+
+    Nothing is loaded here: the model comes in on the first search that embeds a query.
+    """
+    if settings.EMBEDDER == "none":
+        return None
+    key = (settings.EMBEDDER, settings.EMBEDDING_MODEL, settings.EMBEDDING_CACHE_DIR)
+    if key not in _query_embedders:
+        _query_embedders[key] = LazyEmbedder(settings)
+    return _query_embedders[key]
 
 
 def get_database_check(settings: Annotated[Settings, Depends(get_settings)]) -> DatabaseCheck:
