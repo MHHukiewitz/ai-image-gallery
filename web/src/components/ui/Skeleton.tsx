@@ -6,7 +6,10 @@ export function Skeleton({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       aria-hidden="true"
-      className={clsx("animate-pulse rounded-xl bg-zinc-200 dark:bg-zinc-800", className)}
+      className={clsx(
+        "motion-safe:animate-pulse rounded-xl bg-zinc-200 dark:bg-zinc-800",
+        className,
+      )}
       {...props}
     />
   );

@@ -18,7 +18,11 @@ export function Spinner({
     <svg
       viewBox="0 0 24 24"
       fill="none"
-      className={clsx("size-4 animate-spin", className)}
+      // Slower, not stopped, under reduced motion: a still icon would look like a finished one.
+      className={clsx(
+        "size-4 animate-spin motion-reduce:animate-[spin_3s_linear_infinite]",
+        className,
+      )}
       {...(decorative ? { "aria-hidden": true } : { role: "status", "aria-label": label })}
       {...props}
     >
