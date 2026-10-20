@@ -13,7 +13,10 @@ export interface paths {
         };
         /**
          * Health
-         * @description Return liveness. `deep` is accepted, but its database check isn't written yet.
+         * @description Return liveness. With `deep=1`, also check that the database answers.
+         *
+         *     The deep check keeps a free-tier Supabase project awake and lets the monitor see an outage
+         *     that the API process itself doesn't notice. It answers 503 when the database doesn't.
          */
         get: operations["health_api_health_get"];
         put?: never;
