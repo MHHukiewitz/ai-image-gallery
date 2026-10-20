@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from collections.abc import Sequence
@@ -26,6 +27,9 @@ class FastEmbedEmbedder:
 
     def __init__(self, *, model: str, cache_dir: str) -> None:
         """Raises `ValueError` when fastembed doesn't support `model`."""
+        # onnxruntime ships usage telemetry that starts when it is imported, and fastembed imports
+        # it. Nothing here should phone home, so switch it off first. An explicit value still wins.
+        os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
         from fastembed import TextEmbedding
 
         dimensions = {
@@ -60,12 +64,8 @@ class FastEmbedEmbedder:
     def _loaded_model(self) -> "TextEmbedding":
         """Load the model once. Callers hold the lock."""
         if self._model is None:
-            import onnxruntime
             from fastembed import TextEmbedding
 
-            # onnxruntime ships usage telemetry. Nothing here should phone home, and it has to be
-            # switched off before the first session is created.
-            onnxruntime.disable_telemetry_events()
             started = time.monotonic()
             self._model = TextEmbedding(
                 model_name=self._model_name, cache_dir=self._cache_dir, threads=1

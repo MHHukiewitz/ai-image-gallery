@@ -3,12 +3,12 @@
 The real model is exercised by tests/integration/test_embedding_model.py.
 """
 
+import os
 import threading
 from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
-import onnxruntime
 import pytest
 from fastembed import TextEmbedding
 
@@ -79,22 +79,23 @@ async def test_the_model_loads_on_first_use_with_one_thread_and_the_cache_dir(
     assert model.constructed == [{"model_name": MODEL, "cache_dir": "/opt/models", "threads": 1}]
 
 
-async def test_onnxruntime_telemetry_is_switched_off_before_the_model_loads(
-    monkeypatch: pytest.MonkeyPatch, model: ModelStub
-) -> None:
-    order: list[str] = []
-    monkeypatch.setattr(onnxruntime, "disable_telemetry_events", lambda: order.append("telemetry"))
-    original_init = TextEmbedding.__init__
+def test_onnxruntime_telemetry_is_switched_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A copy, so the variable the embedder sets doesn't leak into other tests.
+    monkeypatch.setattr(os, "environ", {k: v for k, v in os.environ.items()})
+    os.environ.pop("ORT_DISABLE_TELEMETRY", None)
 
-    def recording_init(this: TextEmbedding, **kwargs: Any) -> None:
-        order.append("model")
-        original_init(this, **kwargs)
+    make_embedder()
 
-    monkeypatch.setattr(TextEmbedding, "__init__", recording_init)
+    assert os.environ["ORT_DISABLE_TELEMETRY"] == "1"
 
-    await make_embedder().embed(["a dog"])
 
-    assert order == ["telemetry", "model"]
+def test_an_explicit_telemetry_setting_is_left_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "environ", {k: v for k, v in os.environ.items()})
+    os.environ["ORT_DISABLE_TELEMETRY"] = "0"
+
+    make_embedder()
+
+    assert os.environ["ORT_DISABLE_TELEMETRY"] == "0"
 
 
 async def test_the_model_loads_once_per_process(model: ModelStub) -> None:
