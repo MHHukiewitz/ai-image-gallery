@@ -1,6 +1,8 @@
+import clsx from "clsx";
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
 
+import { FOCUS_COLOR, FOCUS_RING } from "../../components/ui/focusRing";
 import { Input } from "../../components/ui/Input";
 import { Spinner } from "../../components/ui/Spinner";
 import { ActiveFilterChip } from "./ActiveFilterChip";
@@ -83,8 +85,8 @@ export function SearchBar() {
           className="ps-9 pe-16 [&::-webkit-search-cancel-button]:hidden"
         />
 
-        <div className="absolute inset-y-0 end-1.5 flex items-center gap-1">
-          {searching && <Spinner label="Searching" className="text-zinc-400 dark:text-zinc-500" />}
+        <div className="absolute inset-y-0 end-0 flex items-center gap-1 sm:end-1.5">
+          {searching && <Spinner label="Searching" className="text-zinc-500 dark:text-zinc-400" />}
           {text !== "" ? (
             <button
               type="button"
@@ -93,7 +95,11 @@ export function SearchBar() {
                 inputRef.current?.focus();
               }}
               aria-label="Clear search"
-              className="grid size-7 place-items-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 dark:focus-visible:outline-zinc-100"
+              className={clsx(
+                "grid size-11 place-items-center rounded-full text-zinc-500 motion-safe:transition-colors hover:bg-zinc-100 hover:text-zinc-900 sm:size-7 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
+                FOCUS_RING,
+                FOCUS_COLOR,
+              )}
             >
               <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-4">
                 <path

@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
+import clsx from "clsx";
 
+import { FOCUS_COLOR, FOCUS_RING } from "../../components/ui/focusRing";
 import { getImage } from "../../lib/api";
 import type { GalleryQuery } from "../../lib/galleryQuery";
 import { queryKeys } from "../../lib/queryKeys";
@@ -50,7 +52,7 @@ export function ActiveFilterChip({ query, onClear }: ActiveFilterChipProps) {
     <div
       role="group"
       aria-label="Active filter"
-      className="pointer-events-auto inline-flex h-7 max-w-full items-center gap-2 rounded-full border border-zinc-200 bg-white pr-0.5 pl-3 text-sm shadow-md dark:border-zinc-700 dark:bg-zinc-900"
+      className="pointer-events-auto inline-flex h-11 max-w-full items-center gap-2 rounded-full border border-zinc-200 bg-white pr-0 pl-3 text-sm shadow-md sm:h-7 sm:pr-0.5 dark:border-zinc-700 dark:bg-zinc-900"
     >
       {isSimilar ? (
         <>
@@ -73,7 +75,11 @@ export function ActiveFilterChip({ query, onClear }: ActiveFilterChipProps) {
         type="button"
         onClick={onClear}
         aria-label={isSimilar ? "Clear similar images filter" : "Clear color filter"}
-        className="grid size-6 shrink-0 place-items-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 focus-visible:outline-2 focus-visible:outline-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 dark:focus-visible:outline-zinc-100"
+        className={clsx(
+          "grid size-11 shrink-0 place-items-center rounded-full text-zinc-500 motion-safe:transition-colors hover:bg-zinc-100 hover:text-zinc-900 sm:size-6 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
+          FOCUS_RING,
+          FOCUS_COLOR,
+        )}
       >
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-4">
           <path
