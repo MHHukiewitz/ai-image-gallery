@@ -1,16 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "../../components/ui/Button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorState } from "../../components/ui/ErrorState";
 import { Skeleton } from "../../components/ui/Skeleton";
+import { toast } from "../../components/ui/toast";
 import { useSelectedImage } from "../../lib/galleryQuery";
 import { DeleteImageDialog } from "./DeleteImageDialog";
 import { ImageDetails } from "./ImageDetails";
 import { ImagePanel } from "./ImagePanel";
 import { useReturnFocus } from "./useReturnFocus";
-import { isNotFound, useImageDetail } from "./useImageDetail";
+import { isNetworkError, isNotFound, useImageDetail } from "./useImageDetail";
+
+const NETWORK_TOAST_ID = "image-network-error";
 
 /**
  * The large view of one image, open while `?image=<id>` is in the URL. Every way of closing it
@@ -40,6 +43,11 @@ function ImageDetail({ imageId }: { imageId: number }) {
   const { close } = useSelectedImage();
   const { data: image, error, refetch } = useImageDetail(imageId);
   const [deleting, setDeleting] = useState(false);
+
+  // Offline or unreachable: the error state shows it in place, and the toast makes sure it isn't missed.
+  useEffect(() => {
+    if (isNetworkError(error)) toast.error(error.message, { id: NETWORK_TOAST_ID });
+  }, [error]);
 
   if (isNotFound(error)) {
     return (

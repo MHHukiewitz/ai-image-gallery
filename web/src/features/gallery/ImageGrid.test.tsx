@@ -4,13 +4,16 @@ import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { toast } from "../../components/ui/toast";
 import type { ImageOut, ImagePage } from "../../lib/api";
 import { ApiError, listImages, PAGE_SIZE } from "../../lib/api";
+import { queryKeys } from "../../lib/queryKeys";
 import { MockStore } from "../../mocks/data";
 import { ImageGrid } from "./ImageGrid";
 import { FakeIntersectionObserver, makeImage } from "./testFixtures";
 
 vi.mock("../../lib/supabase", () => ({ supabase: {} }));
+vi.mock("../../components/ui/toast", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("../../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/api")>()),
   listImages: vi.fn(),
@@ -360,6 +363,44 @@ describe("errors", () => {
     expect(screen.getByText("Analyzing…")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   }, 8000);
+});
+
+describe("connection and announcements", () => {
+  it("toasts a lost connection, even while the older results stay on screen", async () => {
+    mockListImages.mockResolvedValueOnce(
+      pageOf(new MockStore().list({ kind: "all" }).slice(0, 3), 0),
+    );
+    const { queryClient } = renderGrid();
+    await waitFor(() => expect(tiles()).toHaveLength(3));
+
+    mockListImages.mockRejectedValue(
+      new ApiError(0, "network_error", "Couldn't reach the server. Check your connection."),
+    );
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.images.all }));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "Couldn't reach the server. Check your connection.",
+        { id: "gallery-network-error" },
+      ),
+    );
+    expect(tiles()).toHaveLength(3);
+  });
+
+  it("announces a finished analysis in a polite live region, once", async () => {
+    mockListImages.mockResolvedValueOnce(
+      pageOf([makeImage(1, { status: "processing", tags: [], description: null })], 0),
+    );
+    const { queryClient } = renderGrid();
+    await screen.findByText("Analyzing…");
+
+    mockListImages.mockResolvedValue(pageOf([makeImage(1)], 0));
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.images.all }));
+
+    const announcement = await screen.findByText("Analysis finished for photo-1.jpg");
+    expect(announcement).toHaveAttribute("aria-live", "polite");
+    expect(announcement).toHaveClass("sr-only");
+  });
 });
 
 describe("polling", () => {
