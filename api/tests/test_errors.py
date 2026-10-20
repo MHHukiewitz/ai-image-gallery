@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from uuid import UUID
 
 import httpx
 import pytest
@@ -10,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from gallery.adapters.supabase_client import database_is_reachable
-from gallery.api.deps import get_database_check
+from gallery.api.deps import CurrentUser, get_current_user, get_database_check
 from gallery.config import Settings
 from gallery.domain.errors import (
     AnalyzerError,
@@ -27,7 +28,12 @@ def app() -> FastAPI:
     # here, after conftest's autouse fixture has set them, instead of at module level.
     from gallery.main import create_app
 
-    return create_app()
+    app = create_app()
+    # The gallery routes need a signed-in user. These tests check error mapping, not sign-in.
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c"), email=None, access_token="test-token"
+    )
+    return app
 
 
 @pytest.fixture

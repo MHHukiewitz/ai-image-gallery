@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from gallery.api.deps import get_database_check
+from gallery.api.deps import CurrentUser, get_current_user, get_database_check
 from gallery.api.schemas import AnalysisOut, ImageOut, to_image_out
 from gallery.domain.models import AnalysisStatus, ImageRecord
 
@@ -21,7 +21,12 @@ def client() -> TestClient:
     # here, after conftest's autouse fixture has set them, instead of at module level.
     from gallery.main import create_app
 
-    return TestClient(create_app())
+    app = create_app()
+    # These tests check validation and status codes, not sign-in, so every request is signed in.
+    app.dependency_overrides[get_current_user] = lambda: CurrentUser(
+        id=OWNER_ID, email=None, access_token="test-token"
+    )
+    return TestClient(app)
 
 
 def make_record(**overrides: Any) -> ImageRecord:
@@ -123,23 +128,9 @@ def test_to_image_out_carries_a_failed_analysis() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("method", "path", "files"),
-    [
-        ("POST", "/api/v1/images", UPLOAD),
-        ("GET", "/api/v1/images", None),
-        ("GET", "/api/v1/images/1", None),
-        ("DELETE", "/api/v1/images/1", None),
-        ("POST", "/api/v1/images/1/reanalyze", None),
-    ],
-)
-def test_every_stub_returns_501(
-    client: TestClient,
-    method: str,
-    path: str,
-    files: dict[str, tuple[str, bytes, str]] | None,
-) -> None:
-    response = client.request(method, path, files=files)
+def test_the_upload_stub_returns_501(client: TestClient) -> None:
+    # The gallery routes are real now. Only upload is still a stub.
+    response = client.post("/api/v1/images", files=UPLOAD)
 
     assert response.status_code == 501
 
