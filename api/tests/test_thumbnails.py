@@ -1,9 +1,10 @@
 import random
+from functools import cache
 from io import BytesIO
 from typing import Any
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageOps
 from PIL.ExifTags import Base
 
 from gallery.domain.errors import InvalidImageError
@@ -12,6 +13,7 @@ from gallery.domain.thumbnails import THUMBNAIL_SIZE, make_thumbnail
 RED = (255, 0, 0)
 GREEN = (0, 255, 0)
 BLUE = (0, 0, 255)
+YELLOW = (255, 255, 0)
 WHITE = (255, 255, 255)
 # WebP is lossy, so a flat color comes back close to itself, not exactly.
 TOLERANCE = 12
@@ -177,6 +179,92 @@ def test_an_exif_rotated_jpeg_is_turned_upright() -> None:
     assert_color(thumbnail.getpixel((150, 280)), BLUE)
 
 
+# --- phone-sized photos ---
+
+PHOTO_SIZE = (4032, 3024)
+# The corners of the upright thumbnail, as sampled below: top left, top right, bottom left and
+# bottom right, in the order the photo's quadrants are stored.
+CORNERS = [(40, 40), (260, 40), (40, 260), (260, 260)]
+
+
+@cache
+def phone_photo(orientation: int | None = None) -> bytes:
+    """A 12 MP JPEG as stored: red, green, blue and yellow quadrants, then the EXIF rotation."""
+    image = Image.new("RGB", PHOTO_SIZE)
+    width, height = PHOTO_SIZE
+    for color, box in zip(
+        [RED, GREEN, BLUE, YELLOW],
+        [(0, 0, width // 2, height // 2), (width // 2, 0, width, height // 2)]
+        + [(0, height // 2, width // 2, height), (width // 2, height // 2, width, height)],
+        strict=True,
+    ):
+        image.paste(color, box)
+    exif = Image.Exif()
+    if orientation is not None:
+        exif[Base.Orientation] = orientation
+    return encode(image, "JPEG", quality=90, exif=exif)
+
+
+def test_a_12_megapixel_jpeg_is_decoded_at_a_quarter_of_its_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # exif_transpose is the first step that loads pixels, so the size it sees is the decoded size.
+    decoded_sizes: list[tuple[int, int]] = []
+    transpose = ImageOps.exif_transpose
+
+    def spy(image: Image.Image, **options: Any) -> Image.Image:
+        decoded_sizes.append(image.size)
+        return transpose(image, **options)
+
+    monkeypatch.setattr(ImageOps, "exif_transpose", spy)
+
+    thumbnail = decode(make_thumbnail(phone_photo()))
+
+    assert thumbnail.size == (300, 300)
+    [(width, height)] = decoded_sizes
+    assert width <= PHOTO_SIZE[0] // 4
+    assert height <= PHOTO_SIZE[1] // 4
+    # Reduced no further than twice the thumbnail, so the final resize stays sharp.
+    assert min(width, height) >= 2 * THUMBNAIL_SIZE
+
+
+@pytest.mark.parametrize(
+    ("orientation", "expected"),
+    [
+        # A half turn puts each quadrant opposite where it was stored.
+        (3, [YELLOW, BLUE, GREEN, RED]),
+        # A quarter turn clockwise: the stored left side becomes the top.
+        (6, [BLUE, RED, YELLOW, GREEN]),
+        # A quarter turn counterclockwise: the stored right side becomes the top.
+        (8, [GREEN, YELLOW, RED, BLUE]),
+    ],
+)
+def test_a_12_megapixel_photo_is_turned_upright_after_the_reduced_decode(
+    orientation: int, expected: list[tuple[int, int, int]]
+) -> None:
+    thumbnail = decode(make_thumbnail(phone_photo(orientation)))
+
+    assert thumbnail.size == (300, 300)
+    for point, color in zip(CORNERS, expected, strict=True):
+        assert_color(thumbnail.getpixel(point), color)
+
+
+def test_an_unrotated_12_megapixel_photo_keeps_its_quadrants() -> None:
+    thumbnail = decode(make_thumbnail(phone_photo()))
+
+    for point, color in zip(CORNERS, [RED, GREEN, BLUE, YELLOW], strict=True):
+        assert_color(thumbnail.getpixel(point), color)
+
+
+def test_a_cmyk_jpeg_that_is_decoded_at_reduced_size_is_still_supported() -> None:
+    data = encode(Image.new("CMYK", (1600, 1400), (0, 255, 255, 0)), "JPEG")
+
+    thumbnail = decode(make_thumbnail(data))
+
+    assert thumbnail.mode == "RGB"
+    assert_color(thumbnail.getpixel((150, 150)), RED)
+
+
 def test_the_original_bytes_are_not_changed() -> None:
     data = encode(Image.new("RGB", (50, 50)))
     copy = bytes(data)
@@ -213,5 +301,33 @@ def test_a_truncated_image_is_corrupt() -> None:
 
     with pytest.raises(InvalidImageError) as excinfo:
         make_thumbnail(data[: len(data) // 2])
+
+    assert excinfo.value.code == "corrupt"
+
+
+def test_a_truncated_jpeg_is_corrupt() -> None:
+    # Cut inside the pixel data, so the reduced-size decode runs out of bytes.
+    data = phone_photo()
+
+    with pytest.raises(InvalidImageError) as excinfo:
+        make_thumbnail(data[: len(data) * 6 // 10])
+
+    assert excinfo.value.code == "corrupt"
+
+
+def test_a_jpeg_missing_only_its_end_marker_is_corrupt() -> None:
+    with pytest.raises(InvalidImageError) as excinfo:
+        make_thumbnail(phone_photo()[:-2])
+
+    assert excinfo.value.code == "corrupt"
+
+
+def test_a_png_with_a_damaged_chunk_is_corrupt() -> None:
+    data = bytearray(noisy_png())
+    middle = len(data) // 2
+    data[middle : middle + 16] = bytes(16)
+
+    with pytest.raises(InvalidImageError) as excinfo:
+        make_thumbnail(bytes(data))
 
     assert excinfo.value.code == "corrupt"
