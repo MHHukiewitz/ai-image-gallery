@@ -87,6 +87,9 @@ jobs:
       - name: Type-check
         working-directory: web
         run: npm run typecheck
+      - name: Format check
+        working-directory: web
+        run: npm run format:check
       - name: Unit tests
         working-directory: web
         run: npm run test -- --run
