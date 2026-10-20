@@ -37,11 +37,7 @@ from gallery.config import Settings
 from gallery.domain.models import (
     AllImages,
     AnalysisStatus,
-    ColorQuery,
-    GalleryQuery,
     NewImage,
-    SimilarTo,
-    TextQuery,
 )
 from gallery.ports import ImageRepo
 from gallery.services.gallery import GalleryService
@@ -246,12 +242,6 @@ async def test_an_insert_that_loses_its_metadata_row_leaves_no_image(alice: Tena
     # image_details hides an image without metadata, so ask the table itself.
     rows = await alice.client.table("images").select("id").execute()
     assert rows.data == []
-
-
-@pytest.mark.parametrize("query", [TextQuery("beach"), SimilarTo(1), ColorQuery("#336699")])
-async def test_search_modes_are_not_implemented_yet(alice: Tenant, query: GalleryQuery) -> None:
-    with pytest.raises(NotImplementedError):
-        await alice.images.list(query, limit=20, offset=0)
 
 
 async def test_only_the_owner_can_requeue_an_image(alice: Tenant, bob: Tenant) -> None:

@@ -17,6 +17,8 @@ from gallery.domain.models import (
     ImageRecord,
     NewImage,
     Page,
+    SimilarTo,
+    TextQuery,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,18 +113,34 @@ class SupabaseImageRepo:
         return _row_to_record(response.data[0]) if response.data else None
 
     async def list(self, query: GalleryQuery, *, limit: int, offset: int) -> Page[ImageRecord]:
-        """Return one page, newest first. Only `AllImages` is supported for now."""
-        if not isinstance(query, AllImages):
-            raise NotImplementedError(f"{type(query).__name__} is not implemented yet")
+        """Return one page: newest first for `AllImages`, best match first for a search.
+
+        The search functions return the `image_details` columns plus `score`, so their rows map
+        like the view's. They come back in rank order, and this method never re-sorts them.
+        """
         # Ask for one row more than the page, to learn whether another page follows.
-        response = (
-            await self._client.table(_DETAILS)
-            .select("*")
-            .order("uploaded_at", desc=True)
-            .order("id", desc=True)
-            .range(offset, offset + limit)
-            .execute()
-        )
+        fetch = limit + 1
+        if isinstance(query, AllImages):
+            response = (
+                await self._client.table(_DETAILS)
+                .select("*")
+                .order("uploaded_at", desc=True)
+                .order("id", desc=True)
+                .range(offset, offset + limit)
+                .execute()
+            )
+        elif isinstance(query, TextQuery):
+            response = await self._client.rpc(
+                "search_images", {"q": query.q, "lim": fetch, "off": offset}
+            ).execute()
+        elif isinstance(query, SimilarTo):
+            response = await self._client.rpc(
+                "similar_images", {"target_id": query.image_id, "lim": fetch, "off": offset}
+            ).execute()
+        else:
+            response = await self._client.rpc(
+                "images_by_color", {"hex": query.hex, "lim": fetch, "off": offset}
+            ).execute()
         rows: list[dict[str, Any]] = response.data
         next_offset = offset + limit if len(rows) > limit else None
         return Page(items=[_row_to_record(row) for row in rows[:limit]], next_offset=next_offset)
