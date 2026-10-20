@@ -5,6 +5,7 @@ user's image reads as missing, never as forbidden.
 """
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -112,11 +113,41 @@ class SupabaseImageRepo:
         )
         return _row_to_record(response.data[0]) if response.data else None
 
-    async def list(self, query: GalleryQuery, *, limit: int, offset: int) -> Page[ImageRecord]:
-        """Return one page: newest first for `AllImages`, best match first for a search.
+    async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
+        """Find the caller's images by content hash, in one query.
 
-        The search functions return the `image_details` columns plus `score`, so their rows map
-        like the view's. They come back in rank order, and this method never re-sorts them.
+        RLS limits the view to the caller's rows, so another user's copy of the same file is not
+        a match. Rows come back newest upload first, and the first row per hash is kept.
+        """
+        if not sha256s:
+            return {}
+        response = (
+            await self._client.table(_DETAILS)
+            .select("*")
+            .in_("content_sha256", list(sha256s))
+            .order("last_uploaded_at", desc=True)
+            .order("id", desc=True)
+            .execute()
+        )
+        matches: dict[str, ImageRecord] = {}
+        for row in response.data:
+            matches.setdefault(row["content_sha256"], _row_to_record(row))
+        return matches
+
+    async def bump(self, image_id: int) -> ImageRecord | None:
+        """Move the image to the top of the gallery. None when it is missing or not the caller's."""
+        response = await self._client.rpc("bump_image", {"p_image_id": image_id}).execute()
+        # The RPC returns a bare boolean. Compare strictly so a surprising payload can't pass.
+        if response.data is not True:
+            return None
+        return await self.get(image_id)
+
+    async def list(self, query: GalleryQuery, *, limit: int, offset: int) -> Page[ImageRecord]:
+        """Return one page: most recently uploaded first for `AllImages`, best match for a search.
+
+        The search functions return the `image_details` columns (all but `last_uploaded_at`) plus
+        `score`, so their rows map like the view's. They come back in rank order, and this method
+        never re-sorts them.
         """
         # Ask for one row more than the page, to learn whether another page follows.
         fetch = limit + 1
@@ -124,7 +155,7 @@ class SupabaseImageRepo:
             response = (
                 await self._client.table(_DETAILS)
                 .select("*")
-                .order("uploaded_at", desc=True)
+                .order("last_uploaded_at", desc=True)
                 .order("id", desc=True)
                 .range(offset, offset + limit)
                 .execute()
