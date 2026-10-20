@@ -10,17 +10,17 @@ function Location() {
   return <output data-testid="search">{useLocation().search}</output>;
 }
 
-function renderCard(image: ReturnType<typeof makeImage>, path = "/") {
+function renderCard(image: ReturnType<typeof makeImage>, path = "/", showMatch = false) {
   const view = render(
     <MemoryRouter initialEntries={[path]}>
-      <ImageCard image={image} />
+      <ImageCard image={image} showMatch={showMatch} />
       <Location />
     </MemoryRouter>,
   );
   const rerenderWith = (next: typeof image) =>
     view.rerender(
       <MemoryRouter initialEntries={[path]}>
-        <ImageCard image={next} />
+        <ImageCard image={next} showMatch={showMatch} />
         <Location />
       </MemoryRouter>,
     );
@@ -199,6 +199,28 @@ describe("ImageCard", () => {
 
       expect(placeholder()).toBeInTheDocument();
       expect(screen.getByText("Analyzing…")).toBeInTheDocument();
+    });
+  });
+
+  describe("match badge", () => {
+    const badge = () => screen.queryByRole("img", { name: /% match$/ });
+
+    it("shows the score as a whole percentage, labelled for screen readers", () => {
+      renderCard(makeImage(1, {}, { score: 0.874 }), "/", true);
+
+      expect(screen.getByRole("img", { name: "87% match" })).toHaveTextContent("87%");
+    });
+
+    it("is absent unless the grid asks for it, as in the text and all modes", () => {
+      renderCard(makeImage(1, {}, { score: 0.874 }));
+
+      expect(badge()).not.toBeInTheDocument();
+    });
+
+    it("is absent for an image that carries no score", () => {
+      renderCard(makeImage(1), "/", true);
+
+      expect(badge()).not.toBeInTheDocument();
     });
   });
 });
