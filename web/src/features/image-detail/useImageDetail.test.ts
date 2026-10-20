@@ -27,6 +27,23 @@ describe("analysisRefetchInterval", () => {
     expect(analysisRefetchInterval(withStatus(status))).toBe(false);
   });
 
+  it("polls while the original or the thumbnail has no URL, whatever the status", () => {
+    const done = withStatus("done");
+
+    expect(analysisRefetchInterval({ ...done, original_url: "" })).toBe(2000);
+    expect(analysisRefetchInterval({ ...done, thumbnail_url: "" })).toBe(2000);
+    expect(analysisRefetchInterval({ ...withStatus("failed"), original_url: "" })).toBe(2000);
+  });
+
+  it("stops once every URL is there, or the original was never part of the response", () => {
+    const done = withStatus("done");
+
+    expect(analysisRefetchInterval({ ...done, original_url: "https://storage.test/o.jpg" })).toBe(
+      false,
+    );
+    expect(analysisRefetchInterval({ ...done, original_url: null })).toBe(false);
+  });
+
   it("doesn't poll before the first response", () => {
     expect(analysisRefetchInterval(undefined)).toBe(false);
   });

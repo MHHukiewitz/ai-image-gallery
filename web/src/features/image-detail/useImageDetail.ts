@@ -12,11 +12,13 @@ export function isAnalyzing(status: AnalysisStatus | undefined): boolean {
 }
 
 /**
- * The modal's `refetchInterval`. Polls only while the analysis is in flight. `done` and `failed`
- * are final until the user retries, so they don't keep the modal polling.
+ * The modal's `refetchInterval`. Polls while the analysis is in flight, and while a URL came back
+ * empty (the server couldn't sign it, and a later poll may). `done` and `failed` are final until
+ * the user retries, so they don't keep the modal polling.
  */
 export function analysisRefetchInterval(image: ImageOut | undefined): number | false {
-  return isAnalyzing(image?.analysis.status) ? ANALYSIS_POLL_MS : false;
+  const missingUrl = image?.thumbnail_url === "" || image?.original_url === "";
+  return isAnalyzing(image?.analysis.status) || missingUrl ? ANALYSIS_POLL_MS : false;
 }
 
 export function isNotFound(error: unknown): boolean {
