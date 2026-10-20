@@ -7,16 +7,21 @@ import json
 import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Iterator
+from io import BytesIO
+from uuid import UUID
 
 import httpx
 import pytest
 import respx
+from PIL import Image
 from storage3.exceptions import StorageApiError
 
 from gallery.adapters import supabase_storage
 from gallery.adapters.supabase_client import AsyncClient, close_client, user_client
 from gallery.adapters.supabase_storage import SignedUrlCache, SupabaseObjectStore
 from gallery.config import Settings
+from gallery.domain.models import ImageRecord, NewImage
+from gallery.services.uploads import UploadService
 
 BASE = "http://localhost:54321/storage/v1"
 PATH = "7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c/1/thumb.webp"
@@ -562,3 +567,43 @@ def test_threads_can_share_the_cache() -> None:
 
     assert failures == []
     assert len(cache) <= 50
+
+
+# --- a failed upload leaves nothing behind -------------------------------------------------
+
+
+class UnreachableImageRepo:
+    """An ImageRepo that must not be reached: the upload dies before the insert."""
+
+    async def insert(self, image: NewImage) -> ImageRecord:
+        raise AssertionError("the thumbnail failed, so nothing should be inserted")
+
+
+async def test_a_failed_thumbnail_put_deletes_the_original(
+    store: SupabaseObjectStore, storage_http: respx.MockRouter
+) -> None:
+    owner = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
+    original = storage_http.post(url__regex=rf"{BASE}/object/images/{owner}/[^/]+/original\.png")
+    thumbnail = storage_http.post(url__regex=rf"{BASE}/object/images/{owner}/[^/]+/thumb\.webp")
+    remove = storage_http.delete(REMOVE_URL)
+    original.mock(return_value=httpx.Response(200, json={"Key": "original"}))
+    thumbnail.mock(side_effect=lambda request: too_many_connections())
+    remove.mock(return_value=httpx.Response(200, json=[]))
+    png = BytesIO()
+    Image.new("RGB", (64, 48), "teal").save(png, format="PNG")
+    service = UploadService(
+        UnreachableImageRepo(),
+        store,
+        max_bytes=1024 * 1024,
+        max_pixels=1_000_000,
+        signed_url_ttl=3600,
+    )
+
+    with pytest.raises(StorageApiError):
+        await service.upload(owner, "beach.png", png.getvalue())
+
+    assert original.call_count == 1
+    assert thumbnail.call_count == 4  # retried before giving up
+    [removal] = remove.calls
+    removed = json.loads(removal.request.content)["prefixes"]
+    assert any(path.endswith("/original.png") for path in removed)
