@@ -3,9 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   apiFetch,
+  bumpImage,
   deleteImage,
   getImage,
   listImages,
+  LOOKUP_LIMIT,
+  lookupImages,
   navigation,
   reanalyzeImage,
   uploadImage,
@@ -177,6 +180,71 @@ describe("image endpoints", () => {
   });
 });
 
+describe("lookupImages", () => {
+  const hash = "a".repeat(64);
+
+  it("posts the hashes as JSON and returns the id for each match", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ matches: { [hash]: 7 } }));
+
+    const matches = await lookupImages([hash, "b".repeat(64)]);
+
+    expect(matches).toEqual({ [hash]: 7 });
+    const { url, init, headers } = lastRequest();
+    expect(url).toBe("/api/v1/images/lookup");
+    expect(init?.method).toBe("POST");
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("Authorization")).toBe("Bearer test-token");
+    expect(JSON.parse(String(init?.body))).toEqual({ content_sha256: [hash, "b".repeat(64)] });
+  });
+
+  it("returns an empty map when nothing matches", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ matches: {} }));
+
+    expect(await lookupImages([hash])).toEqual({});
+  });
+
+  it("allows 50 hashes per request", () => {
+    expect(LOOKUP_LIMIT).toBe(50);
+  });
+
+  it("throws the API's error, for example a 422 for a bad hash", async () => {
+    fetchMock.mockResolvedValue(errorResponse(422, "validation_error", "content_sha256: bad"));
+
+    await expect(lookupImages(["nope"])).rejects.toMatchObject({
+      status: 422,
+      code: "validation_error",
+    });
+  });
+
+  it("passes the abort signal on", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ matches: {} }));
+    const controller = new AbortController();
+
+    await lookupImages([hash], { signal: controller.signal });
+
+    expect(lastRequest().init?.signal).toBe(controller.signal);
+  });
+});
+
+describe("bumpImage", () => {
+  it("posts to the image's bump endpoint and returns the image", async () => {
+    const image = { id: 5, filename: "cat.png" };
+    fetchMock.mockResolvedValue(jsonResponse(image));
+
+    expect(await bumpImage(5)).toEqual(image);
+
+    expect(lastRequest().url).toBe("/api/v1/images/5/bump");
+    expect(lastRequest().init?.method).toBe("POST");
+    expect(lastRequest().headers.get("Authorization")).toBe("Bearer test-token");
+  });
+
+  it("throws a 404 for an image that is gone or isn't the user's", async () => {
+    fetchMock.mockResolvedValue(errorResponse(404, "not_found", "Image not found."));
+
+    await expect(bumpImage(5)).rejects.toMatchObject({ status: 404, code: "not_found" });
+  });
+});
+
 /** Just enough of XMLHttpRequest for uploadImage; tests drive its events by hand. */
 class FakeXhr {
   static instances: FakeXhr[] = [];
@@ -243,7 +311,25 @@ describe("uploadImage", () => {
     expect((xhr.body as FormData).get("file")).toBeInstanceOf(File);
 
     xhr.respond(201, created);
-    await expect(upload).resolves.toEqual(created);
+    await expect(upload).resolves.toEqual({ image: created, created: true });
+  });
+
+  it("resolves a 200 as an image the user already had, with the same shape", async () => {
+    const upload = uploadImage(file);
+    const xhr = await started();
+
+    xhr.respond(200, created);
+
+    await expect(upload).resolves.toEqual({ image: created, created: false });
+  });
+
+  it("rejects a success reply that isn't JSON", async () => {
+    const upload = uploadImage(file);
+    const xhr = await started();
+
+    xhr.respond(200, "<html>proxy</html>");
+
+    await expect(upload).rejects.toMatchObject({ code: "invalid_response" });
   });
 
   it("reports progress as a percentage, finishing at 100", async () => {

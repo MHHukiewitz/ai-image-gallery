@@ -170,6 +170,40 @@ export function reanalyzeImage(id: number): Promise<void> {
   return apiFetch<void>(`/v1/images/${id}/reanalyze`, { method: "POST" });
 }
 
+/** The most hashes one `lookupImages` request may carry. */
+export const LOOKUP_LIMIT = 50;
+
+/**
+ * Asks which of the files, by SHA-256 (64 lowercase hex characters), the user already has.
+ * Returns the id of the matching image for each hash that has one; the rest are absent. At most
+ * `LOOKUP_LIMIT` hashes per call.
+ */
+export async function lookupImages(
+  sha256s: readonly string[],
+  options: { signal?: AbortSignal } = {},
+): Promise<Record<string, number>> {
+  const body: components["schemas"]["LookupRequest"] = { content_sha256: [...sha256s] };
+  const response = await apiFetch<components["schemas"]["LookupResponse"]>("/v1/images/lookup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+  return response.matches;
+}
+
+/** Moves one of the user's images to the top of their gallery, as if it had just been uploaded. */
+export function bumpImage(id: number, options: { signal?: AbortSignal } = {}): Promise<ImageOut> {
+  return apiFetch<ImageOut>(`/v1/images/${id}/bump`, { method: "POST", signal: options.signal });
+}
+
+/** What an upload came back with: the image, and whether it is new or one the user already had. */
+export interface UploadedImage {
+  image: ImageOut;
+  /** False when the server found the same file already in the gallery and bumped it instead. */
+  created: boolean;
+}
+
 export interface UploadOptions {
   /** Called with 0..100 as the file's bytes go out. */
   onProgress?: (percent: number) => void;
@@ -179,14 +213,16 @@ export interface UploadOptions {
 
 /**
  * Uploads one file. Uses XHR because `fetch` can't report upload progress. The returned image
- * is already stored with its thumbnail; its analysis is still `pending`.
+ * is already stored with its thumbnail; its analysis is still `pending`. The server answers 201
+ * for a new image and 200 for one the user already had (nothing is stored, and that image moves to
+ * the top), which `created` tells apart.
  */
-export async function uploadImage(file: File, options: UploadOptions = {}): Promise<ImageOut> {
+export async function uploadImage(file: File, options: UploadOptions = {}): Promise<UploadedImage> {
   const { onProgress, signal } = options;
   const token = await accessToken();
   signal?.throwIfAborted();
 
-  return new Promise<ImageOut>((resolve, reject) => {
+  return new Promise<UploadedImage>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_BASE}/v1/images`);
     xhr.setRequestHeader("Accept", "application/json");
@@ -201,7 +237,7 @@ export async function uploadImage(file: File, options: UploadOptions = {}): Prom
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress?.(100);
         try {
-          resolve(JSON.parse(xhr.responseText) as ImageOut);
+          resolve({ image: JSON.parse(xhr.responseText) as ImageOut, created: xhr.status === 201 });
         } catch {
           reject(
             new ApiError(xhr.status, "invalid_response", "The server sent an unreadable reply."),

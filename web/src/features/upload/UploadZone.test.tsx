@@ -2,25 +2,30 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { InfiniteData } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { toast } from "../../components/ui/toast";
-import { uploadImage } from "../../lib/api";
+import { bumpImage, lookupImages, uploadImage } from "../../lib/api";
 import type { ImageOut, ImagePage, UploadOptions } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
+import { sha256Hex } from "./hashFile";
 import { UploadZone } from "./UploadZone";
 
 vi.mock("../../lib/supabase", () => ({ supabase: { auth: {} } }));
-vi.mock("../../components/ui/toast", () => ({ toast: { error: vi.fn() } }));
+vi.mock("../../components/ui/toast", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 vi.mock("../../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/api")>()),
   uploadImage: vi.fn(),
+  lookupImages: vi.fn(),
+  bumpImage: vi.fn(),
 }));
 
 interface PendingUpload {
   file: File;
   options: UploadOptions;
-  resolve: (image: ImageOut) => void;
+  /** Answers like the API: 201 for a new image, 200 (`created: false`) for one the user had. */
+  resolve: (image: ImageOut, created?: boolean) => void;
 }
 
 let pending: PendingUpload[] = [];
@@ -37,8 +42,18 @@ function image(id: number): ImageOut {
   };
 }
 
+/** A file whose bytes depend on its name, so two names are two different images to the hash. */
 function png(name: string, size = 10): File {
-  return new File([new Uint8Array(size)], name, { type: "image/png" });
+  return new File([new TextEncoder().encode(name.padEnd(size, "."))], name, { type: "image/png" });
+}
+
+async function hashOf(file: File): Promise<string> {
+  return sha256Hex(await file.arrayBuffer());
+}
+
+/** Shows the router's search string, which is where the open image id lives. */
+function LocationProbe() {
+  return <p data-testid="search">{useLocation().search}</p>;
 }
 
 function galleryWith(...ids: number[]): InfiniteData<ImagePage, number> {
@@ -49,9 +64,12 @@ function renderZone(cached?: InfiniteData<ImagePage, number>) {
   const queryClient = new QueryClient();
   if (cached) queryClient.setQueryData(queryKeys.images.list({ kind: "all" }), cached);
   render(
-    <QueryClientProvider client={queryClient}>
-      <UploadZone />
-    </QueryClientProvider>,
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <UploadZone />
+        <LocationProbe />
+      </QueryClientProvider>
+    </MemoryRouter>,
   );
   return { queryClient };
 }
@@ -69,9 +87,12 @@ function dragFiles(files: File[]) {
 
 beforeEach(() => {
   pending = [];
+  vi.mocked(lookupImages).mockResolvedValue({});
   vi.mocked(uploadImage).mockImplementation(
     (file, options = {}) =>
-      new Promise<ImageOut>((resolve, reject) => {
+      new Promise((resolveUpload, reject) => {
+        const resolve = (uploaded: ImageOut, created = true) =>
+          resolveUpload({ image: uploaded, created });
         pending.push({ file, options, resolve });
         options.signal?.addEventListener("abort", () =>
           reject(new DOMException("Upload canceled", "AbortError")),
@@ -132,11 +153,11 @@ describe("uploading", () => {
       Array.from({ length: 6 }, (_, index) => png(`photo-${index + 1}.png`)),
     );
 
+    await waitFor(() => expect(pending).toHaveLength(2));
     const rows = await screen.findAllByRole("listitem");
     expect(rows).toHaveLength(6);
     expect(rows.filter((row) => row.getAttribute("data-status") === "uploading")).toHaveLength(2);
     expect(rows.filter((row) => row.getAttribute("data-status") === "queued")).toHaveLength(4);
-    expect(pending).toHaveLength(2);
     expect(screen.getByText("Uploading 6 images")).toBeInTheDocument();
   });
 
@@ -159,6 +180,7 @@ describe("uploading", () => {
     renderZone(galleryWith(1));
     await user.upload(fileInput(), png("beach.png"));
 
+    await waitFor(() => expect(pending).toHaveLength(1));
     await user.click(await screen.findByRole("button", { name: "Cancel upload of beach.png" }));
 
     expect(pending[0].options.signal?.aborted).toBe(true);
@@ -209,7 +231,7 @@ describe("rejected files", () => {
       "b.webp isn't a JPEG or PNG image, so it was skipped.",
     ]);
     expect(await screen.findByText("ok.png")).toBeInTheDocument();
-    expect(pending).toHaveLength(1);
+    await waitFor(() => expect(pending).toHaveLength(1));
   });
 });
 
@@ -233,7 +255,7 @@ describe("dropping", () => {
     fireEvent.drop(cover, dragFiles([png("dragged.png")]));
 
     expect(await screen.findByText("dragged.png")).toBeInTheDocument();
-    expect(pending).toHaveLength(1);
+    await waitFor(() => expect(pending).toHaveLength(1));
     await waitFor(() => expect(cover).not.toBeVisible());
   });
 
@@ -270,5 +292,83 @@ describe("hero", () => {
     await user.upload(fileInput(), png("first.png"));
     const row = (await screen.findByText("first.png")).closest("li")!;
     expect(within(row).getByRole("progressbar")).toBeInTheDocument();
+  });
+});
+
+describe("files the user already has", () => {
+  const galleryKey = queryKeys.images.list({ kind: "all" });
+  const cachedIds = (queryClient: QueryClient) =>
+    queryClient
+      .getQueryData<InfiniteData<ImagePage>>(galleryKey)
+      ?.pages[0].items.map(({ id }) => id);
+
+  it("bumps a file the gallery already holds instead of uploading it, and says so", async () => {
+    const beach = png("beach.png");
+    vi.mocked(lookupImages).mockResolvedValue({ [await hashOf(beach)]: 2 });
+    vi.mocked(bumpImage).mockResolvedValue(image(2));
+    const { queryClient } = renderZone(galleryWith(3, 2, 1));
+
+    await user.upload(fileInput(), [beach, png("forest.png")]);
+
+    const row = (await screen.findByText("beach.png")).closest("li")!;
+    await within(row).findByText("Already in your gallery, moved to top");
+    expect(row).toHaveAttribute("data-status", "duplicate");
+    expect(bumpImage).toHaveBeenCalledOnce();
+    expect(vi.mocked(bumpImage).mock.calls[0][0]).toBe(2);
+    await waitFor(() => expect(pending.map(({ file }) => file.name)).toEqual(["forest.png"]));
+    expect(cachedIds(queryClient)).toEqual([2, 3, 1]);
+    expect(toast.success).toHaveBeenCalledWith("1 already in your gallery, moved to top");
+    expect(screen.getByText("Uploading 1 image")).toBeInTheDocument();
+  });
+
+  it("opens the existing image from the View button", async () => {
+    const beach = png("beach.png");
+    vi.mocked(lookupImages).mockResolvedValue({ [await hashOf(beach)]: 2 });
+    vi.mocked(bumpImage).mockResolvedValue(image(2));
+    renderZone(galleryWith(2, 1));
+    await user.upload(fileInput(), beach);
+
+    await user.click(await screen.findByRole("button", { name: "View beach.png in your gallery" }));
+
+    expect(screen.getByTestId("search")).toHaveTextContent("?image=2");
+    expect(uploadImage).not.toHaveBeenCalled();
+  });
+
+  it("uploads a file once when the same photo is chosen twice under two names", async () => {
+    const original = png("original.png");
+    const copy = new File([await original.arrayBuffer()], "copy.png", { type: "image/png" });
+    renderZone(galleryWith(1));
+
+    await user.upload(fileInput(), [original, copy]);
+
+    await waitFor(() => expect(pending).toHaveLength(1));
+    expect(pending[0].file.name).toBe("original.png");
+    expect(screen.queryByText("copy.png")).not.toBeInTheDocument();
+    expect(vi.mocked(lookupImages).mock.calls[0][0]).toEqual([await hashOf(original)]);
+    expect(toast.success).toHaveBeenCalledWith("1 identical file in this drop was skipped");
+  });
+
+  it("shows a 200 answer to an upload as already in the gallery, with View", async () => {
+    const { queryClient } = renderZone(galleryWith(5, 4));
+    await user.upload(fileInput(), png("beach.png"));
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    await act(async () => pending[0].resolve(image(4), false));
+
+    const row = screen.getByText("beach.png").closest("li")!;
+    expect(within(row).getByText("Already in your gallery, moved to top")).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: /view beach.png/i })).toBeInTheDocument();
+    expect(within(row).queryByText("Uploaded")).not.toBeInTheDocument();
+    expect(cachedIds(queryClient)).toEqual([4, 5]);
+  });
+
+  it("goes on uploading when the gallery can't be asked", async () => {
+    vi.mocked(lookupImages).mockRejectedValue(new Error("offline"));
+    renderZone(galleryWith(1));
+
+    await user.upload(fileInput(), png("beach.png"));
+
+    await waitFor(() => expect(pending).toHaveLength(1));
+    expect(toast.error).not.toHaveBeenCalled();
   });
 });
