@@ -1,0 +1,20 @@
+version: 2
+
+# Weekly update PRs. Each one runs the CI gate like any other PR.
+updates:
+  # The api/ project is managed by uv. Dependabot's pip ecosystem reads its pyproject.toml and uv.lock.
+  - package-ecosystem: pip
+    directory: /api
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+
+  # Keeps the pinned action versions in ci.yml current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
