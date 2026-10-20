@@ -10,6 +10,7 @@ from gallery.domain.models import (
     ImageRecord,
     NewImage,
     Page,
+    TagVerdict,
 )
 
 
@@ -44,6 +45,12 @@ class ImageAnalyzer(Protocol):
 
     # Raises AnalyzerError on failure.
     async def analyze(self, image: bytes, mime_type: str) -> Analysis: ...
+
+
+class TagVerifier(Protocol):
+    # Judges tags the analyzer already chose. It can only filter and merge them, never add one.
+    # Raises TagVerificationError on failure.
+    async def verify(self, image: bytes, mime_type: str, tags: Sequence[str]) -> TagVerdict: ...
 
 
 class JobQueue(Protocol):
