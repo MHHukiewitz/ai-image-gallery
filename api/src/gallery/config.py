@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     AI_MODEL: str = ""
     AI_TIMEOUT_SECONDS: float = 30.0
 
+    # --- Tag verification (worker, optional) ---
+    # none keeps the analyzer's tags as they are. jev checks them against the image with
+    # TypeSafe Jev, whose image input is still experimental. It never fails a job.
+    TAG_VERIFIER: Literal["none", "jev"] = "none"
+    TYPESAFE_API_KEY: str | None = Field(default=None, repr=False)
+    JEV_MODEL: str = "jev-1.14.0"
+    # Tags the verifier scores below this are dropped, unless fewer than five tags would remain.
+    TAG_MIN_PROBABILITY: float = Field(default=0.5, ge=0.0, le=1.0)
+    # The budget for the whole verification call. When it runs out the tags stay as they were.
+    TAG_VERIFIER_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0.0)
+
     # --- Worker loop ---
     WORKER_CONCURRENCY: int = 4
     WORKER_POLL_MIN_SECONDS: float = 1.0
