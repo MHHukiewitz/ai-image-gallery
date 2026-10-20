@@ -124,7 +124,7 @@ describe("layout", () => {
 });
 
 describe("uploading", () => {
-  it("uploads 6 chosen files as 3 uploading and 3 waiting", async () => {
+  it("uploads 6 chosen files as 2 uploading and 4 waiting", async () => {
     renderZone(galleryWith(1));
 
     await user.upload(
@@ -134,9 +134,9 @@ describe("uploading", () => {
 
     const rows = await screen.findAllByRole("listitem");
     expect(rows).toHaveLength(6);
-    expect(rows.filter((row) => row.getAttribute("data-status") === "uploading")).toHaveLength(3);
-    expect(rows.filter((row) => row.getAttribute("data-status") === "queued")).toHaveLength(3);
-    expect(pending).toHaveLength(3);
+    expect(rows.filter((row) => row.getAttribute("data-status") === "uploading")).toHaveLength(2);
+    expect(rows.filter((row) => row.getAttribute("data-status") === "queued")).toHaveLength(4);
+    expect(pending).toHaveLength(2);
     expect(screen.getByText("Uploading 6 images")).toBeInTheDocument();
   });
 
