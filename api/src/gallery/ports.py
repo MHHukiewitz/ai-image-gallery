@@ -20,6 +20,13 @@ class ImageRepo(Protocol):
 
     async def get(self, image_id: int) -> ImageRecord | None: ...
 
+    # Maps each of the caller's content hashes that has a match to that image. If several images
+    # share a hash (older uploads can), the most recently uploaded one is returned.
+    async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]: ...
+
+    # Moves the image to the top of the caller's gallery. None when it is missing or not theirs.
+    async def bump(self, image_id: int) -> ImageRecord | None: ...
+
     async def list(self, query: GalleryQuery, *, limit: int, offset: int) -> Page[ImageRecord]: ...
 
     # Returns the deleted record so the caller can remove its stored objects.
