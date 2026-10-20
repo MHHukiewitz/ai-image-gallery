@@ -5,6 +5,7 @@ none of these tests touches Supabase or needs a token.
 """
 
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -25,7 +26,6 @@ from gallery.domain.models import (
 from gallery.ports import ImageRepo, ObjectStore
 
 OWNER_ID = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
-NOT_IMPLEMENTED = {"error": {"code": "not_implemented", "message": "This is not implemented yet."}}
 NOT_FOUND = {"error": {"code": "not_found", "message": "Image not found."}}
 
 
@@ -142,7 +142,7 @@ def test_a_thumbnail_the_store_cannot_sign_is_an_empty_url(
 
 
 def test_q_is_stripped_and_searches_by_text(client: TestClient, repo: AsyncMock) -> None:
-    repo.list.side_effect = NotImplementedError("TextQuery is not implemented yet")
+    repo.list.return_value = Page(items=[], next_offset=None)
 
     client.get("/api/v1/images", params={"q": "  beach "})
 
@@ -150,7 +150,8 @@ def test_q_is_stripped_and_searches_by_text(client: TestClient, repo: AsyncMock)
 
 
 def test_similar_to_searches_by_image(client: TestClient, repo: AsyncMock) -> None:
-    repo.list.side_effect = NotImplementedError("SimilarTo is not implemented yet")
+    repo.get.return_value = make_record(7)
+    repo.list.return_value = Page(items=[], next_offset=None)
 
     client.get("/api/v1/images", params={"similar_to": 7})
 
@@ -158,7 +159,7 @@ def test_similar_to_searches_by_image(client: TestClient, repo: AsyncMock) -> No
 
 
 def test_color_is_lowercased_before_the_search(client: TestClient, repo: AsyncMock) -> None:
-    repo.list.side_effect = NotImplementedError("ColorQuery is not implemented yet")
+    repo.list.return_value = Page(items=[], next_offset=None)
 
     client.get("/api/v1/images", params={"color": "#AABBCC"})
 
@@ -170,15 +171,20 @@ def test_color_is_lowercased_before_the_search(client: TestClient, repo: AsyncMo
     [{"q": "beach"}, {"similar_to": 7}, {"color": "#336699"}],
     ids=["text", "similar", "color"],
 )
-def test_a_search_mode_is_501_until_it_is_built(
-    client: TestClient, repo: AsyncMock, params: dict[str, object]
+def test_a_search_mode_returns_its_page_with_scores(
+    client: TestClient, repo: AsyncMock, store: AsyncMock, params: dict[str, object]
 ) -> None:
-    repo.list.side_effect = NotImplementedError("not built yet")
+    # The search itself runs in the repo, which this test replaces. The route passes the page on.
+    found = replace(make_record(3), score=0.83)
+    repo.get.return_value = make_record(7)  # the target of a similar-to search is visible
+    repo.list.return_value = Page(items=[found], next_offset=None)
+    store.signed_urls.return_value = signed_thumbnails(found)
 
     response = client.get("/api/v1/images", params=params)
 
-    assert response.status_code == 501
-    assert response.json() == NOT_IMPLEMENTED
+    assert response.status_code == 200
+    assert response.json()["items"][0]["id"] == 3
+    assert response.json()["items"][0]["score"] == 0.83
 
 
 @pytest.mark.parametrize(

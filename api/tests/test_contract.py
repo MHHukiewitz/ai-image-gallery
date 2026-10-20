@@ -2,14 +2,22 @@
 
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 
-from gallery.api.deps import CurrentUser, get_current_user, get_database_check
+from gallery.api.deps import (
+    CurrentUser,
+    get_current_user,
+    get_database_check,
+    get_image_repo,
+    get_object_store,
+)
 from gallery.api.schemas import AnalysisOut, ImageOut, to_image_out
-from gallery.domain.models import AnalysisStatus, ImageRecord
+from gallery.domain.models import AnalysisStatus, ImageRecord, Page
+from gallery.ports import ImageRepo, ObjectStore
 
 OWNER_ID = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
 
@@ -160,9 +168,19 @@ def test_q_and_color_together_return_422_in_the_error_shape(client: TestClient) 
 
 @pytest.mark.parametrize("query", ["q=a", "similar_to=1", "color=%23ffffff"])
 def test_a_single_filter_is_allowed(client: TestClient, query: str) -> None:
+    # The search runs in the repo, which is replaced here, so no database is needed.
+    repo = AsyncMock(spec=ImageRepo)
+    repo.get.return_value = make_record()  # a similar-to target has to be visible
+    repo.list.return_value = Page(items=[], next_offset=None)
+    store = AsyncMock(spec=ObjectStore)
+    store.signed_urls.return_value = {}
+    client.app.dependency_overrides[get_image_repo] = lambda: repo
+    client.app.dependency_overrides[get_object_store] = lambda: store
+
     response = client.get(f"/api/v1/images?{query}")
 
-    assert response.status_code == 501
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "next_offset": None}
 
 
 def test_invalid_parameter_returns_422_in_the_error_shape(client: TestClient) -> None:

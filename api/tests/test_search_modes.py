@@ -1,0 +1,145 @@
+"""The search modes of the Supabase image repo, against a fake RPC client: no network.
+
+The fake records each call and answers with the rows it is given. Those rows have the shape the
+search functions return: the `image_details` columns plus `score`.
+"""
+
+from types import SimpleNamespace
+from typing import Any, cast
+from uuid import UUID
+
+import pytest
+
+from gallery.adapters.supabase_client import AsyncClient
+from gallery.adapters.supabase_images import SupabaseImageRepo
+from gallery.domain.models import (
+    AnalysisStatus,
+    ColorQuery,
+    GalleryQuery,
+    Page,
+    SimilarTo,
+    TextQuery,
+)
+
+OWNER_ID = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
+
+
+def search_row(image_id: int, *, score: float = 0.5) -> dict[str, Any]:
+    """One row as a search function returns it: the `image_details` columns, then `score`."""
+    folder = f"{OWNER_ID}/{image_id}"
+    return {
+        "id": image_id,
+        "user_id": str(OWNER_ID),
+        "filename": f"photo-{image_id}.jpg",
+        "original_path": f"{folder}/original.jpg",
+        "thumbnail_path": f"{folder}/thumb.webp",
+        "mime_type": "image/jpeg",
+        "size_bytes": 1234,
+        "width": 640,
+        "height": 480,
+        "content_sha256": "a" * 64,
+        "uploaded_at": "2026-10-20T12:00:00+00:00",
+        "description": "A beach at dusk.",
+        "tags": ["beach"],
+        "colors": ["#336699"],
+        "ai_processing_status": "done",
+        "last_error": None,
+        "score": score,
+    }
+
+
+class FakeRpcClient:
+    """Answers every RPC with the same rows, and records each function name with its parameters."""
+
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        self.rows = rows or []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def rpc(self, name: str, params: dict[str, Any]) -> "FakeRpc":
+        return FakeRpc(self, name, params)
+
+
+class FakeRpc:
+    def __init__(self, client: FakeRpcClient, name: str, params: dict[str, Any]) -> None:
+        self._client = client
+        self._name = name
+        self._params = params
+
+    async def execute(self) -> SimpleNamespace:
+        self._client.calls.append((self._name, self._params))
+        return SimpleNamespace(data=self._client.rows)
+
+
+def repo_over(client: FakeRpcClient) -> SupabaseImageRepo:
+    return SupabaseImageRepo(cast(AsyncClient, client))
+
+
+# --- the RPC each query calls --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_call"),
+    [
+        (TextQuery("beach"), ("search_images", {"q": "beach", "lim": 3, "off": 4})),
+        (SimilarTo(7), ("similar_images", {"target_id": 7, "lim": 3, "off": 4})),
+        (ColorQuery("#336699"), ("images_by_color", {"hex": "#336699", "lim": 3, "off": 4})),
+    ],
+    ids=["text", "similar", "color"],
+)
+async def test_each_search_mode_calls_its_rpc_for_one_row_more_than_the_page(
+    query: GalleryQuery, expected_call: tuple[str, dict[str, Any]]
+) -> None:
+    client = FakeRpcClient()
+
+    await repo_over(client).list(query, limit=2, offset=4)
+
+    assert client.calls == [expected_call]
+
+
+# --- pages and scores ----------------------------------------------------------------------
+
+
+async def test_a_full_page_with_an_extra_row_has_a_next_offset() -> None:
+    client = FakeRpcClient([search_row(3), search_row(2), search_row(1)])
+
+    page = await repo_over(client).list(TextQuery("beach"), limit=2, offset=4)
+
+    assert [item.id for item in page.items] == [3, 2]
+    assert page.next_offset == 6
+
+
+async def test_the_last_page_has_no_next_offset() -> None:
+    client = FakeRpcClient([search_row(2), search_row(1)])
+
+    page = await repo_over(client).list(TextQuery("beach"), limit=2, offset=0)
+
+    assert [item.id for item in page.items] == [2, 1]
+    assert page.next_offset is None
+
+
+async def test_a_search_with_no_match_is_an_empty_page() -> None:
+    page = await repo_over(FakeRpcClient()).list(ColorQuery("#336699"), limit=20, offset=0)
+
+    assert page == Page(items=[], next_offset=None)
+
+
+async def test_each_result_carries_its_score_and_its_metadata() -> None:
+    client = FakeRpcClient([search_row(1, score=0.875)])
+
+    page = await repo_over(client).list(SimilarTo(9), limit=20, offset=0)
+
+    (item,) = page.items
+    assert item.score == 0.875
+    assert item.status is AnalysisStatus.DONE
+    assert item.tags == ("beach",)
+    assert item.colors == ("#336699",)
+
+
+async def test_results_keep_the_rank_the_function_gave_them() -> None:
+    # Ids descending would be the table's order. The rank puts 1 first, so nothing re-sorts them.
+    client = FakeRpcClient([search_row(1, score=0.9), search_row(5, score=0.4)])
+
+    page = await repo_over(client).list(TextQuery("beach"), limit=20, offset=0)
+
+    assert [item.id for item in page.items] == [1, 5]
+    assert [item.score for item in page.items] == [0.9, 0.4]
