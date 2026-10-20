@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     SIGNED_URL_TTL_SECONDS: int = 3600
     MAX_UPLOAD_MB: int = 10
     MAX_IMAGE_PIXELS: int = 40_000_000
+    # How many uploads are decoded at once. Each holds tens of megabytes while it decodes.
+    UPLOAD_PROCESSING_CONCURRENCY: int = Field(default=2, ge=1)
 
     # --- AI analysis (worker) ---
     ANALYZER: Literal["fake", "anthropic", "openai_compat"] = "fake"

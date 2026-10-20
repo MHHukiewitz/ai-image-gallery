@@ -7,8 +7,10 @@ part of it: the new row starts `pending` and the worker picks it up.
 import asyncio
 import hashlib
 import logging
+from functools import cache
 from uuid import UUID, uuid4
 
+from gallery.config import get_settings
 from gallery.domain.filenames import display_filename
 from gallery.domain.models import ImageRecord, NewImage
 from gallery.domain.thumbnails import make_thumbnail
@@ -21,6 +23,17 @@ _THUMBNAIL_FILENAME = "thumb.webp"
 _THUMBNAIL_MIME_TYPE = "image/webp"
 
 
+@cache
+def _shared_processing_slots() -> asyncio.Semaphore:
+    """Return the process-wide cap on uploads being decoded at once.
+
+    Every request builds its own UploadService, so the cap has to live here, not on the
+    instance. It's created on first use: the settings can't be read at import time, and a
+    semaphore belongs to the event loop that first waits on it.
+    """
+    return asyncio.Semaphore(get_settings().UPLOAD_PROCESSING_CONCURRENCY)
+
+
 class UploadService:
     def __init__(
         self,
@@ -30,6 +43,7 @@ class UploadService:
         max_bytes: int,
         max_pixels: int,
         signed_url_ttl: int,
+        processing_slots: asyncio.Semaphore | None = None,
     ) -> None:
         self._repo = repo
         self._store = store
@@ -37,6 +51,10 @@ class UploadService:
         self.max_bytes = max_bytes
         self._max_pixels = max_pixels
         self._signed_url_ttl = signed_url_ttl
+        # Injectable so a test can bound a service on its own, without the shared one.
+        self._processing_slots = (
+            _shared_processing_slots() if processing_slots is None else processing_slots
+        )
 
     async def upload(
         self, user_id: UUID, raw_filename: str | None, data: bytes
@@ -51,8 +69,10 @@ class UploadService:
         signed, the URL is an empty string: failing the request would report an error for an
         image that was saved, and the user would upload it again.
         """
-        # Decoding is CPU-bound, so it runs in a thread to keep other requests moving.
-        info, thumbnail, content_sha256 = await asyncio.to_thread(self._process, data)
+        # Decoding is CPU-bound, so it runs in a thread to keep other requests moving. A burst of
+        # photos would otherwise decode side by side and exhaust the container's memory.
+        async with self._processing_slots:
+            info, thumbnail, content_sha256 = await asyncio.to_thread(self._process, data)
 
         # The bucket policy and the database CHECK both require this {user_id}/ prefix.
         folder = f"{user_id}/{uuid4()}"
