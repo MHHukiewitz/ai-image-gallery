@@ -14,7 +14,8 @@ from urllib.parse import urlparse
 
 import openai
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionMessageParam
+from openai.types import CompletionUsage
+from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 
 from gallery.adapters.analyzers.images import image_data_url, normalize_image
 from gallery.adapters.analyzers.parsing import InvalidAnalysisError, parse_analysis
@@ -165,10 +166,11 @@ class _UsageTotals:
     output_tokens: int | None = None
     cost_usd: float | None = None
 
-    def add(self, usage: Any) -> None:
+    def add(self, usage: CompletionUsage | None) -> None:
         """Add one response's `usage`. A provider that reports nothing leaves the totals None."""
         if usage is None:
             return
+        # getattr: compatible servers differ in which fields they fill in.
         self.input_tokens = _sum_known(self.input_tokens, getattr(usage, "prompt_tokens", None))
         self.output_tokens = _sum_known(
             self.output_tokens, getattr(usage, "completion_tokens", None)
@@ -190,7 +192,7 @@ def _sum_known[T: (int, float)](total: T | None, amount: T | None) -> T | None:
     return amount if total is None else total + amount
 
 
-def _reported_cost(usage: Any) -> float | None:
+def _reported_cost(usage: CompletionUsage) -> float | None:
     # OpenRouter adds `cost` (USD) to `usage`. Plain OpenAI doesn't, so it stays unknown.
     cost = getattr(usage, "cost", None)
     if isinstance(cost, bool) or not isinstance(cost, int | float):
@@ -210,7 +212,7 @@ def _is_transient_status(status_code: int) -> bool:
     return status_code in (408, 429) or status_code >= 500
 
 
-def _reply_text(response: Any) -> str:
+def _reply_text(response: ChatCompletion) -> str:
     # OpenRouter sometimes answers 200 with an error object and no choices.
     choices = getattr(response, "choices", None) or []
     if not choices:
