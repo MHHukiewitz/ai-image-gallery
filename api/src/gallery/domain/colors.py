@@ -6,9 +6,19 @@ ranks them by ΔE76 in Lab space (docs/architecture.md D6 and §7).
 
 import math
 import re
+from io import BytesIO
+
+from PIL import Image, ImageOps
+
+from gallery.domain.errors import InvalidImageError
 
 type Rgb = tuple[int, int, int]
 type Lab = tuple[float, float, float]
+
+THUMBNAIL_SIZE = (128, 128)
+PALETTE_SIZE = 8
+# Palette entries this close are near-duplicates, so only the more frequent one is kept.
+MIN_DELTA_E = 10.0
 
 # D65 reference white, as X, Y, Z with Y = 1.
 _D65_WHITE = (0.95047, 1.0, 1.08883)
@@ -16,6 +26,35 @@ _D65_WHITE = (0.95047, 1.0, 1.08883)
 _EPSILON = 216 / 24389
 _KAPPA = 24389 / 27
 _HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def dominant_colors(data: bytes, k: int = 3) -> tuple[str, ...]:
+    """Return up to `k` dominant colors as lowercase hex, most frequent first.
+
+    Fewer than `k` colors come back when the image has fewer distinct colors, but there's always
+    at least one. Raises InvalidImageError when the bytes don't decode as an image.
+    """
+    if k < 1:
+        raise ValueError(f"k must be at least 1, got {k}")
+    palette = _load_thumbnail(data).quantize(colors=PALETTE_SIZE, method=Image.Quantize.MEDIANCUT)
+    # The palette image stores indexes, not colors, so convert to RGB before counting pixels.
+    counts = palette.convert("RGB").getcolors()
+    if not counts:
+        raise InvalidImageError("corrupt", "The image has no pixels.")
+
+    # Equal counts are ordered by color value, so the result doesn't depend on Pillow's internals.
+    ranked = sorted(counts, key=lambda entry: (-entry[0], entry[1]))
+    kept_lab: list[Lab] = []
+    kept_hex: list[str] = []
+    for _, rgb in ranked:
+        lab = rgb_to_lab(rgb)
+        if any(delta_e76(lab, kept) < MIN_DELTA_E for kept in kept_lab):
+            continue
+        kept_lab.append(lab)
+        kept_hex.append(rgb_to_hex(rgb))
+        if len(kept_hex) == k:
+            break
+    return tuple(kept_hex)
 
 
 def rgb_to_lab(rgb: Rgb) -> Lab:
@@ -59,3 +98,26 @@ def _lab_f(ratio: float) -> float:
     if ratio > _EPSILON:
         return ratio ** (1 / 3)
     return (_KAPPA * ratio + 16) / 116
+
+
+def _load_thumbnail(data: bytes) -> Image.Image:
+    """Decode `data` into an upright RGB image that fits inside THUMBNAIL_SIZE."""
+    try:
+        with Image.open(BytesIO(data)) as opened:
+            # Cameras store rotation in EXIF, not in the pixels, so apply it before the thumbnail.
+            upright = ImageOps.exif_transpose(opened)
+            rgb = _flatten_onto_white(upright)
+    except Image.DecompressionBombError as error:
+        raise InvalidImageError("too_many_pixels", "The image is too large to decode.") from error
+    except (OSError, SyntaxError, ValueError) as error:
+        raise InvalidImageError("corrupt", "The image can't be decoded.") from error
+    rgb.thumbnail(THUMBNAIL_SIZE)
+    return rgb
+
+
+def _flatten_onto_white(image: Image.Image) -> Image.Image:
+    """Return an RGB copy of `image`, with any transparency shown as white."""
+    if not image.has_transparency_data:
+        return image.convert("RGB")
+    white = Image.new("RGBA", image.size, (255, 255, 255, 255))
+    return Image.alpha_composite(white, image.convert("RGBA")).convert("RGB")
