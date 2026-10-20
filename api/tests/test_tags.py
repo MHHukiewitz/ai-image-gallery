@@ -95,6 +95,103 @@ def test_description_keeps_only_the_first_sentence(raw: str, expected: str) -> N
     assert normalize_description(raw) == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "A painting of St. Augustine holding a book. Second sentence.",
+            "A painting of St. Augustine holding a book.",
+        ),
+        ("A snowy Mt. Fuji rises at dawn. Clouds drift below.", "A snowy Mt. Fuji rises at dawn."),
+        ("Mt. Fuji at dawn.", "Mt. Fuji at dawn."),
+        ("Ask Dr. Smith about the rash today. Then wait.", "Ask Dr. Smith about the rash today."),
+        (
+            "Mr. Jones and Ms. Lee walk their old dog. It is slow.",
+            "Mr. Jones and Ms. Lee walk their old dog.",
+        ),
+        (
+            "Mrs. Patel waters the garden every morning. It blooms.",
+            "Mrs. Patel waters the garden every morning.",
+        ),
+        (
+            "Martin Luther King Jr. Park is busy at noon. Kids play.",
+            "Martin Luther King Jr. Park is busy at noon.",
+        ),
+        (
+            "Visitors gather at the Sr. Library in the square. It is quiet.",
+            "Visitors gather at the Sr. Library in the square.",
+        ),
+        (
+            "Room No. Twelve faces the harbour at night. It has a balcony.",
+            "Room No. Twelve faces the harbour at night.",
+        ),
+        (
+            "Dogs vs. Cats is painted on the old wall. Its colours are bright.",
+            "Dogs vs. Cats is painted on the old wall.",
+        ),
+        (
+            "Pets such as dogs, e.g. Cats and birds, sleep here. They nap.",
+            "Pets such as dogs, e.g. Cats and birds, sleep here.",
+        ),
+        (
+            "Pets such as dogs, e.g. cats and birds, sleep here.",
+            "Pets such as dogs, e.g. cats and birds, sleep here.",
+        ),
+        (
+            "Pets, i.e. Cats and birds, sleep indoors. They nap.",
+            "Pets, i.e. Cats and birds, sleep indoors.",
+        ),
+        (
+            "Pots, pans, etc. Hang on the kitchen wall. They are old.",
+            "Pots, pans, etc. Hang on the kitchen wall.",
+        ),
+        (
+            "A church (St. Mark's) glows at dusk. Lights are on.",
+            "A church (St. Mark's) glows at dusk.",
+        ),
+        (
+            "A portrait of J. K. Rowling signing books. Smiling widely.",
+            "A portrait of J. K. Rowling signing books.",
+        ),
+        (
+            "Written by J.R.R. Tolkien in Oxford. It sold well.",
+            "Written by J.R.R. Tolkien in Oxford.",
+        ),
+        # Only the capitalised "No." is an abbreviation, so a lowercase "no." still ends a sentence.
+        (
+            "A man shakes his head and says no. Then he leaves the room.",
+            "A man shakes his head and says no.",
+        ),
+    ],
+)
+def test_description_does_not_end_at_an_abbreviation_or_initial(raw: str, expected: str) -> None:
+    assert normalize_description(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "Is this really a cat sleeping on the sofa? Yes, it is.",
+            "Is this really a cat sleeping on the sofa?",
+        ),
+        (
+            "What a lovely view of the harbour at dusk! Truly.",
+            "What a lovely view of the harbour at dusk!",
+        ),
+    ],
+)
+def test_description_ends_at_bang_or_question_mark_before_a_capital(
+    raw: str, expected: str
+) -> None:
+    assert normalize_description(raw) == expected
+
+
+def test_full_stop_before_a_lowercase_letter_does_not_end_the_sentence() -> None:
+    raw = "The wave rolls in over the reef. then it breaks."
+    assert normalize_description(raw) == raw
+
+
 def test_description_is_capped_at_300_characters() -> None:
     result = normalize_description("x" * 500)
     assert result == "x" * MAX_DESCRIPTION_CHARS

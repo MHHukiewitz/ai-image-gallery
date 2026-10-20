@@ -14,7 +14,15 @@ MAX_DESCRIPTION_CHARS = 300
 MAX_MERGE_QUESTIONS = 3
 
 _APOSTROPHES = "'’"
-_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
+# Every candidate sentence end. `_split_sentences` decides which of them really end a sentence.
+_SENTENCE_END = re.compile(r"[.!?] ")
+# Dotted initials such as "J." or "J.R.R.". A name written this way doesn't end a sentence.
+_INITIALS = re.compile(r"(?:[A-Z]\.)+")
+# Matched exactly as written. A lowercase "no." can end a sentence ("He said no. Then he left."),
+# so the list stays capitalised and tight rather than matching case-insensitively.
+_ABBREVIATIONS = frozenset(
+    {"St.", "Mt.", "Dr.", "Mr.", "Mrs.", "Ms.", "Jr.", "Sr.", "vs.", "e.g.", "i.e.", "etc.", "No."}
+)
 _REPEATED_HYPHENS = re.compile(r"-{2,}")
 
 
@@ -35,10 +43,37 @@ def normalize_tags(raw: Iterable[str]) -> tuple[str, ...]:
 
 
 def normalize_description(raw: str) -> str:
-    """Trim the text, keep only its first sentence and cap it at `MAX_DESCRIPTION_CHARS`."""
+    """Trim the text, keep only its first sentence and cap it at `MAX_DESCRIPTION_CHARS`.
+
+    A sentence ends at `.`, `!` or `?` followed by a space and an uppercase letter, or at the end
+    of the text. The same marks don't end one after an abbreviation or an initial, so
+    "A painting of St. Augustine." stays whole.
+    """
     text = " ".join(raw.split())
-    first_sentence = _SENTENCE_BREAK.split(text, maxsplit=1)[0]
+    first_sentence = _split_sentences(text)[0]
     return first_sentence[:MAX_DESCRIPTION_CHARS].rstrip()
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Cut `text` into sentences. Always returns at least one part, which may be empty."""
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_END.finditer(text):
+        # `text` has no trailing whitespace, so a character always follows the space.
+        if not text[match.end()].isupper() or _ends_with_abbreviation(text, match.start()):
+            continue
+        sentences.append(text[start : match.start() + 1])
+        start = match.end()
+    sentences.append(text[start:])
+    return sentences
+
+
+def _ends_with_abbreviation(text: str, mark: int) -> bool:
+    """Whether the word that ends with the punctuation at `text[mark]` is an abbreviation."""
+    word_start = text.rfind(" ", 0, mark) + 1
+    # Strip opening brackets and quotes so that "(St." still counts as "St.".
+    word = text[word_start : mark + 1].lstrip("\"'([“‘")
+    return word in _ABBREVIATIONS or _INITIALS.fullmatch(word) is not None
 
 
 def duplicate_candidates(
