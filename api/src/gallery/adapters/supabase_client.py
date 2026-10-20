@@ -5,6 +5,8 @@ policies apply to every call. Only the worker uses the secret key (`service_clie
 """
 
 import logging
+from collections.abc import Awaitable, Callable
+from urllib.parse import urlsplit
 
 import httpx
 from postgrest import APIError
@@ -21,11 +23,37 @@ logger = logging.getLogger(__name__)
 # Uploads and downloads move up to MAX_UPLOAD_MB, so the read timeout is generous. A dead host
 # should still fail fast, hence the short connect timeout.
 _HTTP_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+_CONNECT_TIMEOUT_SECONDS = 5.0
 # A monitor would rather hear "down" quickly than wait on a hung database.
 _HEALTH_TIMEOUT = httpx.Timeout(5.0)
 
 # Postgres SQLSTATE for "insufficient privilege".
 _INSUFFICIENT_PRIVILEGE = "42501"
+
+
+def _database_timeout(settings: Settings) -> httpx.Timeout:
+    """The limit for one PostgREST request, from SUPABASE_HTTP_TIMEOUT_SECONDS."""
+    seconds = settings.SUPABASE_HTTP_TIMEOUT_SECONDS
+    return httpx.Timeout(seconds, connect=min(seconds, _CONNECT_TIMEOUT_SECONDS))
+
+
+def _postgrest_timeout_hook(
+    settings: Settings, timeout: httpx.Timeout
+) -> Callable[[httpx.Request], Awaitable[None]]:
+    """Return an httpx request hook that gives PostgREST requests, and only them, `timeout`.
+
+    The Supabase SDK shares one HTTP client between PostgREST and Storage, whose uploads and
+    downloads need the longer default. httpx reads a request's own timeout from its extensions,
+    so the hook sets it for the `/rest/v1/` path and leaves every other request alone.
+    """
+    rest_path = f"{urlsplit(settings.SUPABASE_URL).path.rstrip('/')}/rest/v1/"
+    per_request = timeout.as_dict()
+
+    async def apply(request: httpx.Request) -> None:
+        if request.url.path.startswith(rest_path):
+            request.extensions["timeout"] = per_request
+
+    return apply
 
 
 async def _create_client(
@@ -34,10 +62,19 @@ async def _create_client(
     *,
     authorization: str | None = None,
     http_timeout: httpx.Timeout = _HTTP_TIMEOUT,
+    database_timeout: httpx.Timeout | None = None,
 ) -> AsyncClient:
     # One HTTP client per Supabase client. The user's token lives only on this client, and
     # close_client() releases the connections once the request is done.
-    http_client = httpx.AsyncClient(timeout=http_timeout, follow_redirects=True)
+    http_client = httpx.AsyncClient(
+        timeout=http_timeout,
+        follow_redirects=True,
+        event_hooks=(
+            {"request": [_postgrest_timeout_hook(settings, database_timeout)]}
+            if database_timeout is not None
+            else None
+        ),
+    )
     # We only make API calls, so there is no session to refresh or persist.
     options = AsyncClientOptions(
         auto_refresh_token=False, persist_session=False, httpx_client=http_client
@@ -55,10 +92,15 @@ async def user_client(settings: Settings, access_token: str) -> AsyncClient:
     """Return a client that calls PostgREST and Storage as the user who owns `access_token`.
 
     It carries the publishable key as `apikey` and the user's JWT as the bearer token, so RLS
-    sees `auth.uid()`. Call `close_client` when the request is done.
+    sees `auth.uid()`. A database request that gets no answer within
+    `SUPABASE_HTTP_TIMEOUT_SECONDS` fails with an httpx timeout. Call `close_client` when the
+    request is done.
     """
     return await _create_client(
-        settings, settings.SUPABASE_PUBLISHABLE_KEY, authorization=f"Bearer {access_token}"
+        settings,
+        settings.SUPABASE_PUBLISHABLE_KEY,
+        authorization=f"Bearer {access_token}",
+        database_timeout=_database_timeout(settings),
     )
 
 
@@ -69,7 +111,9 @@ async def service_client(settings: Settings) -> AsyncClient:
     """
     if not settings.SUPABASE_SECRET_KEY:
         raise RuntimeError("SUPABASE_SECRET_KEY is not set; the service client needs it")
-    return await _create_client(settings, settings.SUPABASE_SECRET_KEY)
+    return await _create_client(
+        settings, settings.SUPABASE_SECRET_KEY, database_timeout=_database_timeout(settings)
+    )
 
 
 async def close_client(client: AsyncClient) -> None:
