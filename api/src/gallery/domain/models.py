@@ -1,6 +1,6 @@
 """Domain models passed between services, ports and adapters. Plain data, no I/O."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
@@ -110,7 +110,13 @@ class AllImages:
 
 @dataclass(frozen=True, slots=True)
 class TextQuery:
+    """Words to look for. `embedding` is the query's meaning as a vector, when one was made.
+
+    With it the search also finds images by meaning, and without it, by words alone.
+    """
+
     q: str
+    embedding: tuple[float, ...] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

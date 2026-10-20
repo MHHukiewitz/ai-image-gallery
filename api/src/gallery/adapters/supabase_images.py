@@ -147,7 +147,9 @@ class SupabaseImageRepo:
 
         The search functions return the `image_details` columns (all but `last_uploaded_at`) plus
         `score`, so their rows map like the view's. They come back in rank order, and this method
-        never re-sorts them.
+        never re-sorts them. A text query that carries an embedding goes to
+        `search_images_semantic`, which matches words and meaning. Without one it goes to
+        `search_images`, which matches words only.
         """
         # Ask for one row more than the page, to learn whether another page follows.
         fetch = limit + 1
@@ -160,6 +162,16 @@ class SupabaseImageRepo:
                 .range(offset, offset + limit)
                 .execute()
             )
+        elif isinstance(query, TextQuery) and query.embedding is not None:
+            response = await self._client.rpc(
+                "search_images_semantic",
+                {
+                    "q": query.q,
+                    "q_embedding": list(query.embedding),
+                    "lim": fetch,
+                    "off": offset,
+                },
+            ).execute()
         elif isinstance(query, TextQuery):
             response = await self._client.rpc(
                 "search_images", {"q": query.q, "lim": fetch, "off": offset}
