@@ -1,0 +1,352 @@
+{
+  "rubric": "Ten images were rated: 5 religious-art images and 5 phone photos, spread evenly over their part of the subset (the script picks them). The agent that ran this benchmark (Claude) looked at each image at the size the models saw (1024 px long side) and scored every model's tags and its description from 1 to 5. Mike can spot-check any row. The outputs were laid out with model names hidden and in a different shuffled order for each image, and were scored before the names were revealed. All eight runs were scored in one pass so the same yardstick applies to each.\n\n**Tags.**\n- **5**: every tag is true of the image, and together they cover the main subject, the key objects and the setting. Nothing important is missing.\n- **4**: all true, but a notable element is missing or one tag is weak, imprecise or generic.\n- **3**: the main subject is right, but there are two or more generic, unsupported or misleading tags, or several notable elements are missing.\n- **2**: several wrong tags, or nearly all generic.\n- **1**: mostly wrong.\n\n**Description.**\n- **5**: accurate and specific, with no invented detail. One sentence, no \"This image shows\".\n- **4**: accurate but generic, or one minor imprecision.\n- **3**: one clear error or invented detail, or the main subject is missing.\n- **2**: several errors.\n- **1**: wrong or unusable.\n- A description of 29 words or more is capped at 4, because the prompt asks for at most 25. (Up to 28 is tolerated.)\n- A description that the pipeline cut short at an abbreviation such as \"St.\" is scored on the words that remain. That cut is a bug in `normalize_description`, not the model's fault.\n\nWith 10 images, a difference of 0.2 is one point on one image, so read the means as tiers, not as a ranking.",
+  "notes": [
+    "The three Claude tiers are within the noise of each other on tags (4.7–4.8) and descriptions (4.6–4.8). Without the 29-word cap, Haiku's description score is 4.7–4.8 as well. Gemini 2.5 Flash-Lite is the clear low (3.5 / 3.4): it often returns generic one-word tags, and on the phone photos it sometimes described a scene the photo doesn't show. GPT-6 Luna sits between (4.4 / 4.4).",
+    "The factual errors that did occur were colors invented for a black-and-white engraving (`red crosses` on the crusaders image, from three different runs) and a material named wrongly in one phone photo. No call was refused, and none needed a correction request.",
+    "Claude Haiku and Sonnet often ignore the prompt's 25-word limit for the description (see the second table). The pipeline only caps characters, so this is harmless today, but the prompt could say \"at most 20 words\" to pull the average back.",
+    "`normalize_description` keeps only the first sentence, and it treats the period of `St.` as a sentence end. Two descriptions of the St Augustine image (Gemini and Luna) were saved cut off after \"St.\". That is a bug in `api/src/gallery/domain/tags.py`, outside this ticket.",
+    "Ratings are one rater's judgement on 10 images. They are a screen for obvious gaps, not a benchmark with error bars. The ratings sheet is not committed. The repository is public, so what the models wrote about the phone photos is withheld too."
+  ],
+  "ratings": {
+    "a-single-tear-st-augustine-quote.jpg": {
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 3,
+        "description": 3
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 5,
+        "description": 4
+      }
+    },
+    "christ-carrying-the-cross-mosaic-via-dolorosa.jpg": {
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 4,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      }
+    },
+    "crusaders.jpg": {
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 4,
+        "description": 3
+      },
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 4,
+        "description": 3
+      },
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 3,
+        "description": 3
+      },
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 4,
+        "description": 3
+      }
+    },
+    "jesus-painting-2.jpeg": {
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 5,
+        "description": 4
+      }
+    },
+    "lead-us-not-into-temptation-angel-painting.jpg": {
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 3,
+        "description": 3
+      },
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 5,
+        "description": 5
+      }
+    },
+    "photo-3d1846cdf44a": {
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 3,
+        "description": 3
+      }
+    },
+    "photo-068952cfd87a": {
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 3,
+        "description": 3
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 4,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 5,
+        "description": 5
+      }
+    },
+    "photo-1281e767a202": {
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 5,
+        "description": 5
+      }
+    },
+    "photo-eb48697aae91": {
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 4,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 3,
+        "description": 3
+      }
+    },
+    "photo-b734267705a9": {
+      "openrouter-anthropic-claude-haiku-5.5": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-opus-5.5": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-opus-5.5-effort-low": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-low": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-sonnet-5.5": {
+        "tags": 5,
+        "description": 4
+      },
+      "openrouter-openai-gpt-6-luna": {
+        "tags": 5,
+        "description": 5
+      },
+      "openrouter-google-gemini-2.5-flash-lite": {
+        "tags": 4,
+        "description": 4
+      },
+      "openrouter-anthropic-claude-haiku-5.5-effort-medium": {
+        "tags": 5,
+        "description": 4
+      }
+    }
+  }
+}
