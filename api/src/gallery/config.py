@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     # The budget for the whole verification call. When it runs out the tags stay as they were.
     TAG_VERIFIER_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0.0)
 
+    # --- Embeddings (worker) ---
+    # none stores no embeddings, so "find similar" scores on tag words alone. fastembed runs a small
+    # local ONNX model inside the worker process and stores its vectors through pgvector.
+    EMBEDDER: Literal["none", "fastembed"] = "none"
+    # The vectors in the database come from one model. A different model needs a new calibration of
+    # search_embedding_floor() (see docs/architecture.md section 8) and a backfill.
+    EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
+    # Where fastembed looks for the model. The Docker image downloads it here at build time.
+    EMBEDDING_CACHE_DIR: str = "/opt/models"
+
     # --- Worker loop ---
     WORKER_CONCURRENCY: int = 4
     WORKER_POLL_MIN_SECONDS: float = 1.0
