@@ -24,7 +24,7 @@ The grading weights are: core functionality 35%, code quality 25%, UI/UX 20%, AI
 | D4 | **Ingest is synchronous** in the API: validate, thumbnail, store, insert. **AI enrichment is asynchronous** in a worker. | The thumbnail appears instantly and the AI never blocks the upload. |
 | D5 | **The queue is `image_metadata.ai_processing_status`**, claimed through an RPC that uses `FOR UPDATE SKIP LOCKED`. | It's durable, needs no Redis, and gives one source of truth for status. |
 | D6 | **Dominant colors are computed locally** (Pillow quantize). AI is used only for tags and the sentence. | Local extraction is free and deterministic, and more accurate than hex codes guessed by an LLM. Colors still work when the AI fails. |
-| D7 | An **`ImageAnalyzer` port** with three adapters: a **native Anthropic adapter** (the production path), an **OpenAI-compatible adapter** (benchmark comparisons and fallback) and a **`FakeAnalyzer`**. An optional, best-effort **`TagVerifier`** stage (Jev, #50) can then filter and merge tags. | Claude runs on the Max plan's monthly API credits. The official SDK gives typed structured outputs, typed errors and refusal handling. The OpenAI-compatible adapter keeps the comparison honest and keeps another vendor one config change away. Tests and offline dev need no key. |
+| D7 | An **`ImageAnalyzer` port** with three adapters: a **native Anthropic adapter** (the production path), an **OpenAI-compatible adapter** (benchmark comparisons and fallback) and a **`FakeAnalyzer`**. An optional, best-effort **`TagVerifier`** stage (Jev, #50) can then filter and merge tags. A **`TextEmbedder` port** (#63) has a local **fastembed** adapter running `BAAI/bge-small-en-v1.5` and a fake. The worker embeds each analyzed image's description and tags and stores the vector with **pgvector in the same Postgres**, so there is no vector-DB service. | Claude runs on the Max plan's monthly API credits. The official SDK gives typed structured outputs, typed errors and refusal handling. The OpenAI-compatible adapter keeps the comparison honest and keeps another vendor one config change away. Tests and offline dev need no key. The embedding model is small (about 65 MB, ONNX on the CPU, no torch), so semantic matching needs no second API, no key and no extra service, and the API never loads it. |
 | D8 | **Search and similarity live in Postgres SQL functions** (`security invoker`). | They run under RLS (so search is automatically per-user), paginate in the DB and need no vector DB. |
 | D9 | An **AI result cache** keyed by `(content_sha256, analyzer_id)`. | Re-uploads and re-analysis with the same model cost nothing. Changing the prompt version invalidates the cache. |
 | D10 | **React + Vite + TypeScript + Tailwind + TanStack Query**, served as a static SPA by nginx. | This matches the challenge stack and is cheap to host. TanStack Query handles caching, pagination and polling. |
@@ -246,15 +246,34 @@ All three fit easily within $200 a month for a demo. #6 replaces these estimates
 
 **Colors.** The worker downsamples to 128 px and runs `Image.quantize(colors=8, method=MEDIANCUT)`. It ranks the palette by pixel count and drops near-duplicates (ΔE < 10). Then it returns the top 3 as `#rrggbb`.
 
-## 8. Similarity (cosine, no vector DB)
+## 8. Similarity (embeddings in Postgres, no vector DB service)
 
-- **Tag similarity:** `tag_sim(A, B) = |A ∩ B| / sqrt(|A| · |B|)`. This is cosine similarity on binary vectors, where A and B are the *word sets* of the two images' tags, not the tag strings. A trigger splits every tag into words, stems them with the `english` text search configuration (stop words drop out) and deduplicates them into `image_metadata.tag_lexemes`. So `house`, `houses` and `red house` overlap, where whole-string matching would score them 0. This is for matching only: `tags` stays exactly as the model wrote it, so compounds such as `hot dog`, `palm tree` and `New York` show intact in the UI and still get the exact-tag boost in text search.
+- **Semantic similarity:** The worker embeds each analyzed image's text, `"{description} Tags: {tag}, {tag}, …"` built from the *final* tags after the verifier, with **BAAI/bge-small-en-v1.5** (MIT, 384 dimensions) through **fastembed**. It runs on the CPU as an ONNX model with no torch. The model is loaded only by the worker, from `/opt/models` where the Docker image put it at build time, so the runtime never downloads it. The vector goes into `image_metadata.embedding` (pgvector, `vector(384)`) and the model's id into `embedding_model`. The vectors live in the same Postgres as the rows they describe, are compared under RLS, and need no index at this scale, so there is no vector database. `dog` now finds `puppy` and `beach` finds `sea`. Embedding is best-effort: a failure logs a warning and the job still ends `done`.
+  `semantic(A, B) = max(0, (cos(A, B) − floor) / (1 − floor))`, where `cos` is the cosine similarity of the two embeddings and **`floor` is 0.65**.
+- **Why a floor:** bge-small compresses its scores into a narrow band, and unrelated texts still score 0.5 to 0.7. Using the raw cosine as a 0..1 score would make every image look 60% similar to every other one. The floor was calibrated against the real model, on word pairs and on description-plus-tags texts for the 11 bench images and 12 ordinary photos (253 pairs, labelled by shared topics):
+
+  | Pair | Raw cosine | `semantic` |
+  |---|---|---|
+  | `dog` / `puppy` | 0.867 | 0.62 |
+  | `beach` / `sea` | 0.837 | 0.53 |
+  | `house` / `red house` | 0.736 | 0.24 |
+  | `dog` / `car` | 0.670 | 0.06 |
+  | `beach` / `snow` | 0.646 | 0 |
+
+  | Image pairs, by shared topics | n | Raw cosine: median (p10–p90) | Median `semantic` at 0.65 |
+  |---|---|---|---|
+  | Related (two or more topics) | 9 | 0.85 (0.76–0.91) | 0.57 |
+  | Partly alike (one topic) | 30 | 0.75 (0.65–0.82) | 0.27 |
+  | Different | 214 | 0.60 (0.53–0.70) | 0 |
+
+  At 0.65, 78% of the different pairs map to exactly 0 (their mean is 0.03 and their 90th percentile 0.15), while related pairs score 0.12 to 0.80. A floor of 0.70 zeroed a related pair of puppy photos (raw 0.69), and 0.60 left the different pairs at a mean of 0.08. The floor is the SQL constant `search_embedding_floor()`, and an integration test with the real model keeps it honest. Changing `EMBEDDING_MODEL` means calibrating again and re-running the backfill.
+- **Tag similarity (fallback):** `tag_sim(A, B) = |A ∩ B| / sqrt(|A| · |B|)`. This is cosine similarity on binary vectors, where A and B are the *word sets* of the two images' tags, not the tag strings. A trigger splits every tag into words, stems them with the `english` text search configuration (stop words drop out) and deduplicates them into `image_metadata.tag_lexemes`. So `house`, `houses` and `red house` overlap, where whole-string matching would score them 0. This is for matching only: `tags` stays exactly as the model wrote it, so compounds such as `hot dog`, `palm tree` and `New York` show intact in the UI and still get the exact-tag boost in text search. It replaces `semantic` whenever either image has no embedding yet (an upload not embedded yet, an image analyzed before embeddings, or `EMBEDDER=none`) or the two embeddings come from different models, which can't be compared. A re-analysis that changes an image's tags or description drops its embedding until the worker stores a new one, so a vector never outlives the text it came from. `python -m gallery.backfill_embeddings` embeds the images analyzed earlier.
 - **Color similarity:** `color_sim(Ct, Cc) = mean over c in Ct of max over d in Cc of (1 − min(ΔE76(c, d), 100) / 100)`. It's computed in CIE Lab, because RGB distance doesn't match how people perceive color. The doc will explain this.
-- **"Find similar":** `score = 0.7 · tag_sim + 0.3 · color_sim`. It excludes the target and keeps `score > 0.1`, sorted descending.
+- **"Find similar":** `score = 0.7 · semantic + 0.3 · color_sim`, with `tag_sim` standing in for `semantic` as described above. It excludes the target and keeps `score > 0.1`, sorted descending.
 - **"Filter by color":** `dist = min over d in Cc of ΔE76(query, d)`. It keeps `dist ≤ 25`, sorted ascending.
 - **Text search:** `search_vector @@ query`, where the query is built from the input tokens with `:*` prefix matching on each token, so results update as you type. Results are ranked by `ts_rank_cd` plus a boost for an exact tag match.
 
-The weights and thresholds are SQL constants at the top of the migration, each with a one-line comment.
+The weights, the floor and the thresholds are SQL constants at the top of the migrations, each with a one-line comment.
 
 ## 9. Repo layout and layering rules
 
