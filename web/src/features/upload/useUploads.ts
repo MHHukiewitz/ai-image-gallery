@@ -2,7 +2,15 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useReducer, useRef } from "react";
 
 import { toast } from "../../components/ui/toast";
-import { ApiError, bumpImage, LOOKUP_LIMIT, lookupImages, uploadImage } from "../../lib/api";
+import {
+  ApiError,
+  BUMP_LIMIT,
+  bumpImages,
+  LOOKUP_LIMIT,
+  lookupImages,
+  uploadImage,
+} from "../../lib/api";
+import type { ImageOut } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { collapseIdentical, inChunks } from "./dropCheck";
 import type { HashedFile } from "./dropCheck";
@@ -102,8 +110,9 @@ export function useUploads(): Uploads {
    * Every step that can fail falls back to a normal upload, because the server dedupes too: a
    * file that can't be hashed, a lookup that errors and a bump of an image that has since been
    * deleted all end in "queued". Hashing is one file at a time so a phone never holds a whole
-   * drop in memory, and bumps are sequential so the last file of the drop ends up on top, as it
-   * would after uploads.
+   * drop in memory, and each file counts as checked once it is hashed, which the queue shows.
+   * The duplicates are bumped in chunks of `BUMP_LIMIT` ids, one request each, in drop order, so
+   * the last file of the drop ends up on top, as it would after uploads.
    */
   const checkDrop = useCallback(
     async (drop: readonly { id: string; file: File }[]) => {
@@ -116,6 +125,7 @@ export function useUploads(): Uploads {
         const sha256 = await hashFile(file);
         if (signal.aborted) return;
         hashed.push({ id, file, sha256 });
+        dispatch({ type: "hashed", id });
       }
 
       const { unique, skipped } = collapseIdentical(hashed);
@@ -134,24 +144,44 @@ export function useUploads(): Uploads {
         }
       }
 
-      const duplicates = unique.filter(({ sha256 }) => sha256 !== null && matches.has(sha256));
-      for (const { id, sha256 } of unique) {
-        if (sha256 === null || !matches.has(sha256)) dispatch({ type: "ready", id });
-      }
+      const duplicates = unique.flatMap(({ id, sha256 }) => {
+        const imageId = sha256 === null ? undefined : matches.get(sha256);
+        if (imageId === undefined) {
+          dispatch({ type: "ready", id });
+          return [];
+        }
+        return [{ id, imageId }];
+      });
 
       let bumped = 0;
-      for (const { id, sha256 } of duplicates) {
-        const imageId = matches.get(sha256 ?? "");
-        if (imageId === undefined || !stillWanted(id)) continue;
+      for (const chunk of inChunks(duplicates, BUMP_LIMIT)) {
+        // A file canceled while an earlier chunk was bumping must not be sent at all.
+        const wanted = chunk.filter(({ id }) => stillWanted(id));
+        if (wanted.length === 0) continue;
+        let moved: Map<number, ImageOut>;
         try {
-          const image = await bumpImage(imageId, { signal });
+          const images = await bumpImages(
+            wanted.map(({ imageId }) => imageId),
+            { signal },
+          );
+          moved = new Map(images.map((image) => [image.id, image]));
+        } catch {
+          if (signal.aborted) return;
+          // Not reachable: upload these files like any others.
+          for (const { id } of wanted) dispatch({ type: "ready", id });
+          continue;
+        }
+        // In drop order, so the last file ends up on top of the grid's cache as it does on the server.
+        for (const { id, imageId } of wanted) {
+          const image = moved.get(imageId);
+          if (image === undefined) {
+            // Gone since the lookup: upload the file like any other.
+            dispatch({ type: "ready", id });
+            continue;
+          }
           moveToTopOfGallery(queryClient, image);
           dispatch({ type: "duplicate", id, imageId: image.id });
           bumped += 1;
-        } catch {
-          if (signal.aborted) return;
-          // Gone since the lookup, or not reachable: upload the file like any other.
-          dispatch({ type: "ready", id });
         }
       }
 

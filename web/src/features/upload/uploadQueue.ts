@@ -35,6 +35,8 @@ export interface UploadItem {
   error?: string;
   /** The image the user already has, set while `status` is "duplicate". */
   imageId?: number;
+  /** True once the file's bytes have been hashed, while `status` is "checking". */
+  hashed?: boolean;
 }
 
 export type UploadQueueState = readonly UploadItem[];
@@ -47,6 +49,8 @@ export type UploadAction =
       items: readonly { id: string; file: File }[];
       status?: "checking" | "queued";
     }
+  // The file's bytes have been read and hashed. The drop is still being checked.
+  | { type: "hashed"; id: string }
   // The file is new to the user: let it upload.
   | { type: "ready"; id: string }
   // The user already has this image (found by lookup, or the server answered 200).
@@ -100,6 +104,8 @@ export function uploadQueueReducer(
         .map(({ id, file }): UploadItem => ({ id, file, progress: 0, status }));
       return added.length === 0 ? state : [...state, ...added];
     }
+    case "hashed":
+      return transition(state, action.id, ["checking"], (item) => ({ ...item, hashed: true }));
     case "ready":
       return transition(state, action.id, ["checking"], (item) => ({ ...item, status: "queued" }));
     case "duplicate":
@@ -173,17 +179,21 @@ export function nextToStart(
 
 /**
  * One sentence for the live region. It changes when a file starts, finishes or fails, not on
- * every progress tick, so a screen reader isn't flooded.
+ * every progress tick, so a screen reader isn't flooded. While a drop is being hashed it counts
+ * the files read so far ("Checking 12 of 30…"), because that is the one wait with nothing else
+ * moving on screen.
  */
 export function summarizeQueue(state: UploadQueueState): string {
   const count = (status: UploadStatus) => state.filter((item) => item.status === status).length;
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
   const checking = count("checking");
+  const hashed = state.filter((item) => item.status === "checking" && item.hashed).length;
   const active = count("uploading") + count("queued");
   const failed = count("error");
   const parts: string[] = [];
-  if (checking > 0) parts.push(`Checking ${plural(checking, "image")}`);
+  if (checking > hashed) parts.push(`Checking ${hashed} of ${checking}…`);
+  else if (checking > 0) parts.push(`Checking ${plural(checking, "image")}`);
   if (active > 0) parts.push(`Uploading ${plural(active, "image")}`);
   if (failed > 0) parts.push(`${plural(failed, "upload")} failed`);
   if (parts.length > 0) return parts.join(", ");

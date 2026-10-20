@@ -6,7 +6,7 @@ import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { toast } from "../../components/ui/toast";
-import { bumpImage, lookupImages, uploadImage } from "../../lib/api";
+import { bumpImages, lookupImages, uploadImage } from "../../lib/api";
 import type { ImageOut, ImagePage, UploadOptions } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { sha256Hex } from "./hashFile";
@@ -18,7 +18,7 @@ vi.mock("../../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/api")>()),
   uploadImage: vi.fn(),
   lookupImages: vi.fn(),
-  bumpImage: vi.fn(),
+  bumpImages: vi.fn(),
 }));
 
 interface PendingUpload {
@@ -305,7 +305,7 @@ describe("files the user already has", () => {
   it("bumps a file the gallery already holds instead of uploading it, and says so", async () => {
     const beach = png("beach.png");
     vi.mocked(lookupImages).mockResolvedValue({ [await hashOf(beach)]: 2 });
-    vi.mocked(bumpImage).mockResolvedValue(image(2));
+    vi.mocked(bumpImages).mockResolvedValue([image(2)]);
     const { queryClient } = renderZone(galleryWith(3, 2, 1));
 
     await user.upload(fileInput(), [beach, png("forest.png")]);
@@ -313,8 +313,8 @@ describe("files the user already has", () => {
     const row = (await screen.findByText("beach.png")).closest("li")!;
     await within(row).findByText("Already in your gallery, moved to top");
     expect(row).toHaveAttribute("data-status", "duplicate");
-    expect(bumpImage).toHaveBeenCalledOnce();
-    expect(vi.mocked(bumpImage).mock.calls[0][0]).toBe(2);
+    expect(bumpImages).toHaveBeenCalledOnce();
+    expect(vi.mocked(bumpImages).mock.calls[0][0]).toEqual([2]);
     await waitFor(() => expect(pending.map(({ file }) => file.name)).toEqual(["forest.png"]));
     expect(cachedIds(queryClient)).toEqual([2, 3, 1]);
     expect(toast.success).toHaveBeenCalledWith("1 already in your gallery, moved to top");
@@ -324,7 +324,7 @@ describe("files the user already has", () => {
   it("opens the existing image from the View button", async () => {
     const beach = png("beach.png");
     vi.mocked(lookupImages).mockResolvedValue({ [await hashOf(beach)]: 2 });
-    vi.mocked(bumpImage).mockResolvedValue(image(2));
+    vi.mocked(bumpImages).mockResolvedValue([image(2)]);
     renderZone(galleryWith(2, 1));
     await user.upload(fileInput(), beach);
 

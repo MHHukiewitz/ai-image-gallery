@@ -80,10 +80,20 @@ describe("UploadQueue", () => {
   });
 
   it("says a file is being checked against the gallery before it uploads", () => {
-    setup([item({ id: "a", status: "checking" })]);
+    setup([item({ id: "a", status: "checking", hashed: true })]);
 
     expect(within(rowOf("a.png")).getByText("Checking")).toBeInTheDocument();
     expect(screen.getByText("Checking 1 image")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("shows how far the hashing of a drop has got", () => {
+    setup([
+      item({ id: "a", status: "checking", hashed: true }),
+      item({ id: "b", status: "checking", hashed: true }),
+      item({ id: "c", status: "checking" }),
+    ]);
+
+    expect(screen.getByText("Checking 2 of 3…")).toHaveAttribute("aria-live", "polite");
   });
 
   describe("a file that is already in the gallery", () => {
