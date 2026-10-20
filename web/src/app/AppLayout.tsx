@@ -1,6 +1,8 @@
+import clsx from "clsx";
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 
+import { FOCUS_COLOR, FOCUS_RING } from "../components/ui/focusRing";
 import { UserMenu } from "../features/auth/UserMenu";
 import { SearchBar } from "../features/search/SearchBar";
 
@@ -14,9 +16,18 @@ export function AppLayout({ children }: { children: ReactNode }) {
       >
         Skip to content
       </a>
+      {/* Phones get two rows: logo and account on top, the search full width below. From `sm` up it
+          is one row, with the search taking the space between them. */}
       <header className="sticky top-0 z-30 border-b border-zinc-200 bg-white/80 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
-        <div className="mx-auto flex h-16 w-full max-w-7xl items-center gap-3 px-4">
-          <Link to="/" className="flex shrink-0 items-center gap-2 font-semibold tracking-tight">
+        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 sm:h-16 sm:flex-nowrap sm:py-0">
+          <Link
+            to="/"
+            className={clsx(
+              "-ml-2 flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-xl font-semibold tracking-tight sm:-ml-0 sm:min-h-0 sm:min-w-0 sm:justify-start",
+              FOCUS_RING,
+              FOCUS_COLOR,
+            )}
+          >
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-6">
               <rect
                 x="3"
@@ -37,10 +48,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
             </svg>
             <span className="sr-only sm:not-sr-only">AI Image Gallery</span>
           </Link>
-          <div className="min-w-0 flex-1">
+          <div className="order-last min-w-0 basis-full sm:order-none sm:flex-1 sm:basis-auto">
             <SearchBar />
           </div>
-          <UserMenu />
+          <div className="ml-auto shrink-0 sm:ml-0">
+            <UserMenu />
+          </div>
         </div>
       </header>
       <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">

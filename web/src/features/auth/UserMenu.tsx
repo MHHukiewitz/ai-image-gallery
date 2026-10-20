@@ -1,7 +1,9 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useQueryClient } from "@tanstack/react-query";
+import clsx from "clsx";
 import { useNavigate } from "react-router";
 
+import { FOCUS_COLOR, FOCUS_RING } from "../../components/ui/focusRing";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { supabase } from "../../lib/supabase";
 import { useSession } from "./useSession";
@@ -12,7 +14,8 @@ export function UserMenu() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  if (loading) return <Skeleton className="size-9 shrink-0 rounded-full" />;
+  // The same size as the button below, so the header doesn't shift when the session loads.
+  if (loading) return <Skeleton className="size-11 shrink-0 rounded-full sm:size-9" />;
   if (!user) return null;
 
   const email = user.email ?? "";
@@ -32,7 +35,11 @@ export function UserMenu() {
         <button
           type="button"
           aria-label="Account menu"
-          className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-sm font-medium text-white hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300 dark:focus-visible:outline-zinc-100"
+          className={clsx(
+            "inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-sm font-medium text-white hover:bg-zinc-700 sm:size-9 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300",
+            FOCUS_RING,
+            FOCUS_COLOR,
+          )}
         >
           <span aria-hidden="true">{initial}</span>
         </button>
