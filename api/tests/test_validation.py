@@ -7,11 +7,12 @@ from io import BytesIO
 from typing import Any
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageFile
 from PIL.ExifTags import Base
 
 from gallery.domain.errors import InvalidImageError
 from gallery.domain.filenames import MAX_FILENAME_LENGTH, display_filename
+from gallery.domain.thumbnails import make_thumbnail
 from gallery.domain.validation import ImageInfo, inspect_image
 
 MAX_BYTES = 10 * 1024 * 1024
@@ -51,21 +52,39 @@ def rejection(data: bytes, **limits: int) -> InvalidImageError:
     return excinfo.value
 
 
+def processing_rejection(data: bytes) -> InvalidImageError:
+    """Run the checks an upload goes through: the header, then the thumbnail, which decodes it.
+
+    inspect_image reads only the header, so damage in the pixel data shows up in the second step.
+    """
+    with pytest.raises(InvalidImageError) as excinfo:
+        inspect(data)
+        make_thumbnail(data)
+    return excinfo.value
+
+
+def png_chunk(kind: bytes, body: bytes) -> bytes:
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+
 def png_claiming(width: int, height: int) -> bytes:
     """A PNG with a valid header that declares a canvas this big, and no pixel data behind it."""
-
-    def chunk(kind: bytes, body: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
-        )
 
     header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", header)
-        + chunk(b"IDAT", zlib.compress(b""))
-        + chunk(b"IEND", b"")
+        + png_chunk(b"IHDR", header)
+        + png_chunk(b"IDAT", zlib.compress(b""))
+        + png_chunk(b"IEND", b"")
     )
+
+
+def jpeg_claiming(width: int, height: int) -> bytes:
+    """A JPEG whose header declares a canvas this big. The few rows of data behind it don't fit."""
+    data = bytearray(encode(Image.new("RGB", (16, 16)), "JPEG"))
+    marker = data.index(b"\xff\xc0")  # SOF0: marker, length, precision, then height and width
+    data[marker + 5 : marker + 9] = struct.pack(">HH", height, width)
+    return bytes(data)
 
 
 def with_orientation(orientation: int) -> Image.Exif:
@@ -182,6 +201,18 @@ def test_a_file_exactly_at_the_pixel_limit_is_accepted() -> None:
     assert inspect(data, max_pixels=100 * 100).width == 100
 
 
+def test_a_huge_dimension_jpeg_is_rejected_without_decoding_it() -> None:
+    # 100 million pixels is above the limit and above Pillow's warning threshold, in 600 bytes.
+    data = jpeg_claiming(10_000, 10_000)
+
+    assert len(data) < 1000
+    assert rejection(data).code == "too_many_pixels"
+
+
+def test_a_jpeg_beyond_pillows_hard_limit_is_rejected() -> None:
+    assert rejection(jpeg_claiming(65_535, 65_535), max_pixels=10**12).code == "too_many_pixels"
+
+
 def test_a_huge_dimension_png_is_rejected_without_decoding_it() -> None:
     # 200 million pixels, in a file of a few dozen bytes.
     data = png_claiming(20_000, 10_000)
@@ -223,7 +254,7 @@ def test_the_bomb_warning_does_not_stay_an_error_after_the_call() -> None:
 def test_a_truncated_file_is_corrupt(image_format: str) -> None:
     data = encode(noisy(), image_format)
 
-    error = rejection(data[: len(data) // 2])
+    error = processing_rejection(data[: len(data) // 2])
 
     assert error.code == "corrupt"
 
@@ -238,12 +269,12 @@ def test_a_png_with_a_damaged_chunk_is_corrupt() -> None:
     middle = len(data) // 2
     data[middle : middle + 16] = bytes(16)
 
-    assert rejection(bytes(data)).code == "corrupt"
+    assert processing_rejection(bytes(data)).code == "corrupt"
 
 
 def test_a_png_without_pixel_data_is_corrupt() -> None:
     # A well-formed header with an empty image stream.
-    assert rejection(png_claiming(10, 10)).code == "corrupt"
+    assert processing_rejection(png_claiming(10, 10)).code == "corrupt"
 
 
 def test_flipping_bytes_never_escapes_as_anything_but_a_domain_error() -> None:
@@ -257,6 +288,68 @@ def test_flipping_bytes_never_escapes_as_anything_but_a_domain_error() -> None:
             # Any other exception escaping would fail the test.
             with contextlib.suppress(InvalidImageError):
                 inspect(bytes(data))
+                make_thumbnail(bytes(data))
+
+
+# --- header only ---
+
+
+@pytest.fixture
+def no_pixels_decoded(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(self: ImageFile.ImageFile, *args: Any) -> None:
+        raise AssertionError("inspect_image decoded the pixels")
+
+    monkeypatch.setattr(ImageFile.ImageFile, "load", refuse)
+
+
+@pytest.mark.usefixtures("no_pixels_decoded")
+@pytest.mark.parametrize(
+    "data",
+    [
+        encode(Image.new("RGB", (40, 30)), "JPEG"),
+        encode(Image.new("RGB", (40, 30)), "JPEG", exif=with_orientation(6)),
+        encode(Image.new("RGB", (40, 30)), "PNG"),
+        encode(Image.new("RGBA", (40, 30)), "PNG", exif=with_orientation(6)),
+        encode(
+            Image.new("RGB", (40, 30)),
+            "MPO",
+            save_all=True,
+            append_images=[Image.new("RGB", (40, 30))],
+        ),
+    ],
+    ids=["jpeg", "rotated-jpeg", "png", "rotated-png", "mpo"],
+)
+def test_inspecting_an_image_decodes_no_pixels(data: bytes) -> None:
+    assert inspect(data).width in (30, 40)
+
+
+def test_damage_after_the_header_is_left_for_the_thumbnail_step() -> None:
+    # The header says what the file claims to be. Whether the pixels are there is the next step's
+    # question, and it answers `corrupt` (see test_a_truncated_file_is_corrupt).
+    data = encode(noisy(), "JPEG")
+
+    assert inspect(data[: len(data) // 2]).format == "jpeg"
+
+
+@pytest.mark.usefixtures("no_pixels_decoded")
+def test_a_png_with_its_exif_after_the_pixel_data_reports_its_upright_size() -> None:
+    # The spec lets eXIf follow IDAT. Pillow only finds it there by decoding the image.
+    png = encode(Image.new("RGB", (40, 30)), "PNG")
+    end = png.rindex(png_chunk(b"IEND", b""))
+    data = png[:end] + png_chunk(b"eXIf", with_orientation(6).tobytes()) + png[end:]
+
+    info = inspect(data)
+
+    assert (info.width, info.height) == (30, 40)
+
+
+def test_a_png_with_a_damaged_late_exif_chunk_is_corrupt() -> None:
+    # The same verdict as for a damaged EXIF block anywhere else in a file.
+    png = encode(Image.new("RGB", (40, 30)), "PNG")
+    end = png.rindex(png_chunk(b"IEND", b""))
+    data = png[:end] + png_chunk(b"eXIf", b"\xff" * 5) + png[end:]
+
+    assert rejection(data).code == "corrupt"
 
 
 # --- orientation ---
@@ -291,6 +384,20 @@ def test_an_exif_rotated_png_reports_its_upright_size() -> None:
     info = inspect(data)
 
     assert (info.width, info.height) == (30, 40)
+
+
+@pytest.mark.parametrize(
+    ("orientation", "expected"),
+    [(3, (4032, 3024)), (6, (3024, 4032)), (8, (3024, 4032))],
+)
+def test_a_12_megapixel_phone_photo_reports_its_upright_size(
+    orientation: int, expected: tuple[int, int]
+) -> None:
+    data = encode(Image.new("RGB", (4032, 3024)), "JPEG", exif=with_orientation(orientation))
+
+    info = inspect(data)
+
+    assert (info.width, info.height) == expected
 
 
 def test_the_pixel_limit_counts_the_stored_pixels_either_way_up() -> None:

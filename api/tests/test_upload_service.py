@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import random
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -118,6 +119,12 @@ def a_jpeg() -> bytes:
 
 def a_png() -> bytes:
     return encode(Image.new("RGBA", (200, 100), "orange"), "PNG")
+
+
+def noise(image_format: str) -> bytes:
+    """Noise compresses badly, so cutting the file in half cuts through real pixel data."""
+    rng = random.Random(0)
+    return encode(Image.frombytes("RGB", (64, 48), rng.randbytes(64 * 48 * 3)), image_format)
 
 
 async def test_a_jpeg_is_stored_as_an_original_and_a_thumbnail(
@@ -367,8 +374,20 @@ async def test_a_successful_upload_deletes_nothing(
         (b"\0" * (MAX_BYTES + 1), "too_large"),
         (encode(Image.new("RGB", (1001, 1000)), "PNG"), "too_many_pixels"),
         (a_jpeg()[:200], "corrupt"),
+        # Cut after the header, so only decoding the pixels can tell.
+        (noise("JPEG")[: len(noise("JPEG")) // 2], "corrupt"),
+        (noise("PNG")[: len(noise("PNG")) // 2], "corrupt"),
     ],
-    ids=["text", "gif", "webp", "too-large", "too-many-pixels", "truncated"],
+    ids=[
+        "text",
+        "gif",
+        "webp",
+        "too-large",
+        "too-many-pixels",
+        "truncated",
+        "jpeg-cut-in-half",
+        "png-cut-in-half",
+    ],
 )
 async def test_an_invalid_file_is_rejected_before_anything_is_stored(
     service: UploadService,

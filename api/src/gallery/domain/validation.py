@@ -2,8 +2,11 @@
 
 Nothing here trusts the client. The format comes from sniffing the content, and the limits are
 checked before the pixels are decoded, so a small file that claims a huge canvas is cheap to refuse.
+No pixel is ever decoded here: that costs tens of megabytes for a phone photo, and the thumbnail
+step decodes the image anyway (at reduced size for a JPEG).
 """
 
+import struct
 import warnings
 from dataclasses import dataclass
 from io import BytesIO
@@ -21,7 +24,8 @@ _FORMATS: dict[str, ImageFormat] = {"JPEG": "jpeg", "MPO": "jpeg", "PNG": "png"}
 _MIME_TYPES: dict[ImageFormat, str] = {"jpeg": "image/jpeg", "png": "image/png"}
 _EXTENSIONS: dict[ImageFormat, str] = {"jpeg": "jpg", "png": "png"}
 # The first bytes of every JPEG and PNG file. Only used to tell a damaged file from a foreign one.
-_SIGNATURES = (b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n")
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_SIGNATURES = (b"\xff\xd8\xff", _PNG_SIGNATURE)
 # EXIF orientations 5 to 8 turn the picture a quarter turn, which swaps its width and height.
 _QUARTER_TURN_ORIENTATIONS = frozenset({5, 6, 7, 8})
 
@@ -40,9 +44,9 @@ class ImageInfo:
 def inspect_image(data: bytes, *, max_bytes: int, max_pixels: int) -> ImageInfo:
     """Check that `data` is a decodable JPEG or PNG within the limits, and describe it.
 
-    The whole image is decoded once, so a truncated or damaged file fails here and not later in
-    the thumbnail step. Raises InvalidImageError with the code `too_large`, `too_many_pixels`,
-    `unsupported_type` or `corrupt`.
+    Only the header is read, so a file that is cut off or damaged after it passes here. It fails
+    in the thumbnail step, which decodes every pixel. Raises InvalidImageError with the code
+    `too_large`, `too_many_pixels`, `unsupported_type` or `corrupt`.
     """
     if len(data) > max_bytes:
         raise InvalidImageError("too_large", f"The file is larger than {max_bytes / 2**20:g} MB.")
@@ -81,9 +85,7 @@ def _inspect(data: bytes, max_pixels: int) -> ImageInfo:
         # The size comes from the header, so this refuses a decompression bomb before decoding it.
         if width * height > max_pixels:
             raise _too_many_pixels(max_pixels)
-        image.load()
-        # Read after loading: PNG can carry its EXIF block after the pixel data.
-        orientation = image.getexif().get(ExifTags.Base.Orientation)
+        orientation = _exif(image, data).get(ExifTags.Base.Orientation)
     if orientation in _QUARTER_TURN_ORIENTATIONS:
         width, height = height, width
     return ImageInfo(
@@ -93,3 +95,22 @@ def _inspect(data: bytes, max_pixels: int) -> ImageInfo:
         width=width,
         height=height,
     )
+
+
+def _exif(image: Image.Image, data: bytes) -> Image.Exif:
+    """Return the EXIF block of `image` without decoding its pixels."""
+    if image.format != "PNG" or "exif" in image.info:
+        return image.getexif()
+    # A PNG may put its eXIf chunk after the pixel data, so Pillow's getexif() decodes the whole
+    # image to look for it. Walk the chunk list instead, which reads no pixel.
+    exif = Image.Exif()
+    position = len(_PNG_SIGNATURE)
+    while position + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[position : position + 8])
+        if kind == b"eXIf":
+            exif.load(data[position + 8 : position + 8 + length])
+            break
+        if kind == b"IEND":
+            break
+        position += 8 + length + 4  # chunk header, body and CRC
+    return exif
