@@ -36,6 +36,20 @@ class Analysis:
 
 
 @dataclass(frozen=True, slots=True)
+class TagVerdict:
+    """What a TagVerifier says about the tags of one image.
+
+    `probabilities` maps a tag to the chance, from 0 to 1, that it describes the image. A tag
+    the verifier didn't score has no entry. Each merge is `(kept, dropped)`: two overlapping tags
+    where `kept` is the better search keyword. `usage` is absent for verifiers that cost nothing.
+    """
+
+    probabilities: dict[str, float]
+    merges: tuple[tuple[str, str], ...] = ()
+    usage: AnalysisUsage | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class NewImage:
     """Insert payload built by the upload service."""
 
