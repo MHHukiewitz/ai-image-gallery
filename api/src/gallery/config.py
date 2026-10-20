@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     SUPABASE_JWKS_URL: str | None = None
     # HS256 fallback for local `supabase start`. Leave unset in production (JWKS is used).
     SUPABASE_JWT_SECRET: str | None = Field(default=None, repr=False)
+    # How long one database (PostgREST) request may take before it is given up on and, where it is
+    # safe to repeat, retried. Storage keeps its longer limit: it moves whole files.
+    SUPABASE_HTTP_TIMEOUT_SECONDS: float = Field(default=8.0, gt=0.0)
 
     # --- Storage and upload limits (API) ---
     STORAGE_BUCKET: str = "images"

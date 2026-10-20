@@ -14,6 +14,7 @@ EXPECTED_SETTINGS = {
     "SUPABASE_SECRET_KEY",
     "SUPABASE_JWKS_URL",
     "SUPABASE_JWT_SECRET",
+    "SUPABASE_HTTP_TIMEOUT_SECONDS",
     "STORAGE_BUCKET",
     "SIGNED_URL_TTL_SECONDS",
     "MAX_UPLOAD_MB",
@@ -56,6 +57,7 @@ def test_defaults_load_with_only_required_env_vars(settings: Settings) -> None:
     assert settings.SUPABASE_PUBLISHABLE_KEY == "test-key"
     assert settings.SUPABASE_SECRET_KEY is None
     assert settings.SUPABASE_JWT_SECRET is None
+    assert settings.SUPABASE_HTTP_TIMEOUT_SECONDS == 8.0
     assert settings.STORAGE_BUCKET == "images"
     assert settings.SIGNED_URL_TTL_SECONDS == 3600
     assert settings.MAX_UPLOAD_MB == 10
@@ -111,6 +113,9 @@ def test_required_settings_must_be_set(monkeypatch: pytest.MonkeyPatch, missing:
         ("MAX_UPLOAD_MB", "lots"),
         # Zero slots would make every upload wait forever.
         ("UPLOAD_PROCESSING_CONCURRENCY", "0"),
+        # A zero or negative limit would fail every database request at once.
+        ("SUPABASE_HTTP_TIMEOUT_SECONDS", "0"),
+        ("SUPABASE_HTTP_TIMEOUT_SECONDS", "-1"),
         ("EMBEDDER", "openai"),
     ],
 )
