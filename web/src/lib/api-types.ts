@@ -34,7 +34,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Images */
+        /**
+         * List Images
+         * @description List the caller's images, newest first. Search with at most one of q, similar_to, color.
+         */
         get: operations["list_images_api_v1_images_get"];
         put?: never;
         /** Upload Image */
@@ -52,11 +55,17 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Image */
+        /**
+         * Get Image
+         * @description Return one image with its signed thumbnail and original URLs.
+         */
         get: operations["get_image_api_v1_images__image_id__get"];
         put?: never;
         post?: never;
-        /** Delete Image */
+        /**
+         * Delete Image
+         * @description Remove the image and its stored files.
+         */
         delete: operations["delete_image_api_v1_images__image_id__delete"];
         options?: never;
         head?: never;
@@ -72,7 +81,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reanalyze Image */
+        /**
+         * Reanalyze Image
+         * @description Queue a fresh analysis of the image.
+         */
         post: operations["reanalyze_image_api_v1_images__image_id__reanalyze_post"];
         delete?: never;
         options?: never;
@@ -225,6 +237,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description The search mode isn't built yet. */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     upload_image_api_v1_images_post: {
@@ -298,6 +319,15 @@ export interface operations {
                     "application/json": components["schemas"]["ImageOut"];
                 };
             };
+            /** @description No image with this id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Invalid request. */
             422: {
                 headers: {
@@ -327,6 +357,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description No image with this id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description Invalid request. */
             422: {
                 headers: {
@@ -355,6 +394,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description No image with this id, or its analysis is already running. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
             };
             /** @description Invalid request. */
             422: {
