@@ -24,7 +24,7 @@ The grading weights are: core functionality 35%, code quality 25%, UI/UX 20%, AI
 | D4 | **Ingest is synchronous** in the API: validate, thumbnail, store, insert. **AI enrichment is asynchronous** in a worker. | The thumbnail appears instantly and the AI never blocks the upload. |
 | D5 | **The queue is `image_metadata.ai_processing_status`**, claimed through an RPC that uses `FOR UPDATE SKIP LOCKED`. | It's durable, needs no Redis, and gives one source of truth for status. |
 | D6 | **Dominant colors are computed locally** (Pillow quantize). AI is used only for tags and the sentence. | Local extraction is free and deterministic, and more accurate than hex codes guessed by an LLM. Colors still work when the AI fails. |
-| D7 | An **`ImageAnalyzer` port** with three adapters: a **native Anthropic adapter** (the production path), an **OpenAI-compatible adapter** (benchmark comparisons and fallback) and a **`FakeAnalyzer`**. | Claude runs on the Max plan's monthly API credits. The official SDK gives typed structured outputs, typed errors and refusal handling. The OpenAI-compatible adapter keeps the comparison honest and keeps another vendor one config change away. Tests and offline dev need no key. |
+| D7 | An **`ImageAnalyzer` port** with three adapters: a **native Anthropic adapter** (the production path), an **OpenAI-compatible adapter** (benchmark comparisons and fallback) and a **`FakeAnalyzer`**. An optional, best-effort **`TagVerifier`** stage (Jev, #50) can then filter and merge tags. | Claude runs on the Max plan's monthly API credits. The official SDK gives typed structured outputs, typed errors and refusal handling. The OpenAI-compatible adapter keeps the comparison honest and keeps another vendor one config change away. Tests and offline dev need no key. |
 | D8 | **Search and similarity live in Postgres SQL functions** (`security invoker`). | They run under RLS (so search is automatically per-user), paginate in the DB and need no vector DB. |
 | D9 | An **AI result cache** keyed by `(content_sha256, analyzer_id)`. | Re-uploads and re-analysis with the same model cost nothing. Changing the prompt version invalidates the cache. |
 | D10 | **React + Vite + TypeScript + Tailwind + TanStack Query**, served as a static SPA by nginx. | This matches the challenge stack and is cheap to host. TanStack Query handles caching, pagination and polling. |
@@ -241,6 +241,8 @@ It records cost per 1k images, p50/p95 latency, JSON validity rate and a 1–5 q
 - Opus 5.5: about $0.01
 
 All three fit easily within $200 a month for a demo. #6 replaces these estimates with measured numbers.
+
+**Tag verification (optional, #50).** With `TAG_VERIFIER=jev`, a TypeSafe Jev call checks each tag against the image and merges near-duplicates. The selection rule always keeps 5–10 tags, and any verifier failure keeps the original tags. See the decision record for the spike numbers.
 
 **Colors.** The worker downsamples to 128 px and runs `Image.quantize(colors=8, method=MEDIANCUT)`. It ranks the palette by pixel count and drops near-duplicates (ΔE < 10). Then it returns the top 3 as `#rrggbb`.
 

@@ -5,7 +5,7 @@
 | **Status** | **Accepted** for the service: Claude through the Anthropic API. **Open** for the model tier: Mike picks it from the measured benchmark in #6. |
 | **Date** | 2026-10-20. All prices were checked against the vendors' official pages that day. |
 | **Deciders** | Mike (owner), orchestrator (research) |
-| **Related** | [architecture.md](architecture.md) §2 (D6, D7) and §7 · #6 (benchmark) · #31 (Anthropic adapter) · #28 (API key) |
+| **Related** | [architecture.md](architecture.md) §2 (D6, D7) and §7 · #6 (benchmark) · #31 (Anthropic adapter) · #50 (Jev tag verifier) · #28 (API key) |
 
 ## 1. What the challenge needs
 
@@ -37,7 +37,7 @@ Per image, in the background:
 | E | **Amazon Rekognition:** DetectLabels + Image Properties | ✅ fixed taxonomy | ❌ no captions | ✅ RGB values plus pixel share | $1.00 per 1k images (labels) + $0.75 per 1k (properties). Labels have a 1,000 images/month free tier for 12 months; properties have none. | Rejected for the same reason as D. |
 | F | **Azure AI Vision Image Analysis 4.0** | ✅ | ✅ captions | ✅ | Not priced: the service is deprecated and retires 2028-09-25 | Rejected. Building new work on a deprecated API is a dead end. |
 | G | **Self-hosted vision model** (Ollama, Qwen-VL / Moondream class) on the ops-server VPS | ✅ | ✅ | ⚠️ | $0 per call. It costs CPU and RAM on the shared 8 GB box. | Rejected. With no GPU we expect slow, lower-quality results, and it would compete with the other hosted sites for memory. It's private, though, so it's worth revisiting with a GPU. |
-| H | **TypeSafe Jev 1.14** (typed decision model) | ⚠️ closed list only (Choice/Boolean questions) | ❌ typed answers only | ❌ | $0.042 per 1M input tokens, output free. Image token accounting is unpublished. | Rejected. It can't generate the sentence or open-vocabulary tags, and image input is experimental and opt-in. It could be a cheap tag *verifier* later. |
+| H | **TypeSafe Jev 1.14** (typed decision model) | ⚠️ closed list only (Choice/Boolean questions) | ❌ typed answers only | ❌ | $0.042 per 1M input tokens, output free. Image token accounting is unpublished. | **Not usable as the main service:** it can't write the sentence or produce open-vocabulary tags. **Adopted instead as an optional second stage** that checks and merges the main model's tags (#50, see §3). |
 
 ## 3. Decision
 
@@ -64,6 +64,26 @@ Per image, in the background:
 
 ### Why: data handling
 - **Anthropic doesn't train on uploaded images.** Images also aren't stored beyond the request ([vision docs](https://platform.claude.com/docs/en/build-with-claude/vision)). Users' private photos leave our system only for the duration of one API call.
+
+### Optional second stage: tag verification with Jev (#50)
+
+Jev can't *generate* tags, but it can *judge* them cheaply. With `TAG_VERIFIER=jev`, the worker sends the image and the main model's tags to Jev in one call:
+- one yes/no question per tag ("does this tag describe something visible?");
+- up to 3 merge questions for near-duplicates.
+
+It drops tags scored below 0.5 and merges duplicates, but always keeps 5–10 tags. **It's best-effort:** if Jev fails or times out, the original tags are kept and the job still completes.
+
+**Spike (2026-10-20, `jev-1.14.0`, one image, one call with 13 questions):**
+
+| Measurement | Result |
+|---|---|
+| 9 real tags (house, sun, hill, …) | probability 0.97–0.98 |
+| 3 decoys (cat, beach, car) | probability 0.02–0.04 |
+| Merge `house` vs `red house` | kept `red house` (0.74) |
+| Latency | 597 ms |
+| Cost | 2,764 input tokens, output free: about $0.0001 per image, or $0.12 per 1k |
+
+**Trade-off:** image input is still labeled experimental by TypeSafe, and the spike used an easy cartoon. So the stage is **off by default**, and #6 measures it on the 20 real photos before we decide whether production enables it.
 
 ## 4. Cost per 1,000 images (estimate, until #6 measures it)
 
