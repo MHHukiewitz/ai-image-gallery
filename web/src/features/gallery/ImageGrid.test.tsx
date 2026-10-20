@@ -432,7 +432,8 @@ describe("polling", () => {
 });
 
 describe("match badges", () => {
-  const matchBadges = () => screen.queryAllByRole("img", { name: /% match$/ });
+  // The visual badge is hidden from screen readers; each tile carries the score as its description.
+  const matchBadges = () => screen.queryAllByText(/^\d+%$/);
 
   it.each([["/?similar_to=45"], ["/?color=%23aabbcc"]])(
     "shows a match percentage on every tile at %s",
@@ -443,7 +444,7 @@ describe("match badges", () => {
 
       await waitFor(() => expect(tiles().length).toBeGreaterThan(0));
       expect(matchBadges()).toHaveLength(tiles().length);
-      expect(matchBadges()[0]).toHaveAccessibleName(/^\d+% match$/);
+      expect(tiles()[0]).toHaveAccessibleDescription(/^\d+% match$/);
     },
   );
 
