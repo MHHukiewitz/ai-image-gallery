@@ -140,6 +140,9 @@ jobs:
       - name: pgTAP tests
         if: needs.detect.outputs.pgtap == 'true'
         run: supabase test db
+      - name: PROBE print status env names
+        if: needs.detect.outputs.api_integration == 'true'
+        run: supabase status -o env | cut -d= -f1
       - name: Export local stack keys for the integration tests
         if: needs.detect.outputs.api_integration == 'true'
         run: |
