@@ -20,6 +20,7 @@ from gallery.adapters.verifiers import JevTagVerifier, build_tag_verifier
 from gallery.adapters.verifiers.jev import MIN_SIDE, fit_image
 from gallery.config import Settings
 from gallery.domain.errors import TagVerificationError
+from gallery.worker import run
 
 API_KEY = "test-key"
 MODEL = "jev-1.14.0"
@@ -421,3 +422,13 @@ def test_the_factory_refuses_jev_without_a_key(monkeypatch: pytest.MonkeyPatch) 
 
     with pytest.raises(ValueError, match="TYPESAFE_API_KEY"):
         build_tag_verifier(Settings())
+
+
+async def test_the_worker_stops_at_startup_when_the_verifier_is_misconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TAG_VERIFIER", "jev")
+
+    # No Supabase is running, so reaching the point where the worker connects would fail otherwise.
+    with pytest.raises(ValueError, match="TYPESAFE_API_KEY"):
+        await run(Settings())

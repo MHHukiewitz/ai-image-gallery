@@ -8,8 +8,8 @@ import pytest
 from PIL import Image
 
 from gallery.domain.colors import dominant_colors
-from gallery.domain.errors import AnalyzerError
-from gallery.domain.models import Analysis, AnalysisJob, AnalysisUsage
+from gallery.domain.errors import AnalyzerError, TagVerificationError
+from gallery.domain.models import Analysis, AnalysisJob, AnalysisUsage, TagVerdict
 from gallery.services.analysis import (
     UNDECODABLE_IMAGE_ERROR,
     UNEXPECTED_ERROR,
@@ -509,3 +509,223 @@ async def test_job_line_carries_the_attempt_number(caplog: pytest.LogCaptureFixt
     await rig.service.process(make_job(attempts=2))
 
     assert job_line(caplog).attempt == 2
+
+
+# --- the optional tag verifier ----------------------------------------------------------------
+
+EIGHT_TAGS = Analysis(
+    tags=("house", "red house", "sun", "hill", "tree", "road", "cat", "beach"),
+    description="A red house on a hill.",
+)
+
+
+@dataclass
+class ScriptedVerifier:
+    """Returns `verdict`, or raises `error` when one is set, and remembers what it was given."""
+
+    verdict: TagVerdict = field(default_factory=lambda: TagVerdict(probabilities={}))
+    error: Exception | None = None
+    calls: list[tuple[int, str, tuple[str, ...]]] = field(default_factory=list)
+
+    async def verify(self, image: bytes, mime_type: str, tags: Sequence[str]) -> TagVerdict:
+        self.calls.append((len(image), mime_type, tuple(tags)))
+        if self.error:
+            raise self.error
+        return self.verdict
+
+
+def make_verified_rig(verifier: ScriptedVerifier, *, min_tag_probability: float = 0.5) -> Rig:
+    """A rig whose analyzer returns eight tags and whose service has `verifier`."""
+    rig = make_rig()
+    rig.analyzer.result = EIGHT_TAGS
+    rig.service = AnalysisService(
+        rig.queue,
+        rig.store,
+        rig.analyzer,
+        rig.cache,
+        verifier=verifier,
+        min_tag_probability=min_tag_probability,
+    )
+    return rig
+
+
+def stored_tags(rig: Rig) -> tuple[str, ...]:
+    (completed,) = rig.queue.completed
+    tags = completed["tags"]
+    assert isinstance(tags, tuple)
+    return tags
+
+
+async def test_the_verifier_runs_after_the_analyzer_and_its_verdict_decides_the_tags() -> None:
+    verdict = TagVerdict(
+        probabilities={"house": 0.98, "red house": 0.97, "cat": 0.03, "beach": 0.02},
+        merges=(("red house", "house"),),
+    )
+    verifier = ScriptedVerifier(verdict)
+    rig = make_verified_rig(verifier)
+
+    await rig.service.process(make_job())
+
+    assert stored_tags(rig) == ("red house", "sun", "hill", "tree", "road")
+    assert verifier.calls == [(len(png_bytes()), "image/png", EIGHT_TAGS.tags)]
+    assert len(rig.analyzer.calls) == 1
+    assert rig.queue.failed == []
+
+
+async def test_the_cache_keeps_the_analyzers_tags_not_the_verified_ones() -> None:
+    verifier = ScriptedVerifier(TagVerdict(probabilities={"cat": 0.01, "beach": 0.01}))
+    rig = make_verified_rig(verifier)
+
+    await rig.service.process(make_job())
+
+    assert "cat" not in stored_tags(rig)
+    assert rig.cache.entries == {(SHA, ANALYZER_ID): EIGHT_TAGS}
+
+
+async def test_the_verifier_also_runs_on_a_cache_hit() -> None:
+    verifier = ScriptedVerifier(TagVerdict(probabilities={"cat": 0.01, "beach": 0.01}))
+    rig = make_verified_rig(verifier)
+    rig.cache.entries[(SHA, ANALYZER_ID)] = EIGHT_TAGS
+
+    await rig.service.process(make_job())
+
+    assert rig.analyzer.calls == []
+    assert verifier.calls == [(len(png_bytes()), "image/png", EIGHT_TAGS.tags)]
+    assert stored_tags(rig) == ("house", "red house", "sun", "hill", "tree", "road")
+
+
+async def test_the_verifier_cannot_leave_fewer_than_five_tags() -> None:
+    verifier = ScriptedVerifier(TagVerdict(probabilities={tag: 0.01 for tag in EIGHT_TAGS.tags}))
+    rig = make_verified_rig(verifier)
+
+    await rig.service.process(make_job())
+
+    assert len(stored_tags(rig)) == 5
+
+
+async def test_the_threshold_comes_from_the_service_setting() -> None:
+    probabilities = dict.fromkeys(EIGHT_TAGS.tags, 0.8) | {"cat": 0.6, "beach": 0.7}
+
+    lenient = make_verified_rig(
+        ScriptedVerifier(TagVerdict(probabilities)), min_tag_probability=0.5
+    )
+    strict = make_verified_rig(
+        ScriptedVerifier(TagVerdict(probabilities)), min_tag_probability=0.75
+    )
+    await lenient.service.process(make_job())
+    await strict.service.process(make_job())
+
+    assert stored_tags(lenient) == EIGHT_TAGS.tags
+    assert stored_tags(strict) == ("house", "red house", "sun", "hill", "tree", "road")
+
+
+async def test_the_verifier_is_not_called_when_the_analyzer_fails() -> None:
+    verifier = ScriptedVerifier()
+    rig = make_verified_rig(verifier)
+    rig.analyzer.error = AnalyzerError("The provider is busy", retryable=True)
+
+    await rig.service.process(make_job())
+
+    assert verifier.calls == []
+    assert rig.queue.completed == []
+
+
+async def test_a_verification_error_keeps_the_analyzers_tags_and_the_job_completes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    verifier = ScriptedVerifier(error=TagVerificationError("Jev did not answer within 5.0 seconds"))
+    rig = make_verified_rig(verifier)
+
+    await rig.service.process(make_job())
+
+    assert stored_tags(rig) == EIGHT_TAGS.tags
+    assert rig.queue.failed == []
+    assert job_line(caplog).outcome == "done"
+    # A warning: it must not reach Sentry, and it says why.
+    assert worst_level(caplog) == logging.WARNING
+    (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warning.image_id == 7
+    assert "5.0 seconds" in warning.error
+
+
+async def test_an_unexpected_verifier_exception_keeps_the_tags_and_is_logged_as_an_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    verifier = ScriptedVerifier(error=ValueError("bug in the verifier"))
+    rig = make_verified_rig(verifier)
+
+    await rig.service.process(make_job())
+
+    assert stored_tags(rig) == EIGHT_TAGS.tags
+    assert rig.queue.failed == []
+    line = job_line(caplog)
+    assert (line.outcome, line.levelno) == ("done", logging.INFO)
+    (crash,) = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert crash.exc_info is not None
+    assert crash.exc_info[0] is ValueError
+
+
+async def test_the_job_line_reports_the_verifier(caplog: pytest.LogCaptureFixture) -> None:
+    usage = AnalysisUsage(latency_ms=597, input_tokens=2764, output_tokens=13, cost_usd=0.000116)
+    verdict = TagVerdict(
+        probabilities={"cat": 0.03, "beach": 0.02},
+        merges=(("red house", "house"),),
+        usage=usage,
+    )
+    rig = make_verified_rig(ScriptedVerifier(verdict))
+
+    await rig.service.process(make_job())
+
+    line = job_line(caplog)
+    assert isinstance(line.verifier_latency_ms, int)
+    assert line.verifier_latency_ms >= 0
+    assert line.verifier_input_tokens == 2764
+    assert line.verifier_cost_usd == 0.000116
+    assert line.tags_dropped == 2
+    assert line.tags_merged == 1
+
+
+async def test_a_failed_verification_is_logged_without_counts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rig = make_verified_rig(ScriptedVerifier(error=TagVerificationError("Jev is down")))
+
+    await rig.service.process(make_job())
+
+    line = job_line(caplog)
+    assert isinstance(line.verifier_latency_ms, int)
+    for name in ("verifier_input_tokens", "verifier_cost_usd", "tags_dropped", "tags_merged"):
+        assert not hasattr(line, name)
+
+
+async def test_the_verifier_fields_are_logged_when_completing_fails_afterwards(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    usage = AnalysisUsage(latency_ms=600, input_tokens=2764)
+    rig = make_verified_rig(ScriptedVerifier(TagVerdict({"cat": 0.01}, usage=usage)))
+    rig.queue.complete_error = ConnectionError("database is down")
+
+    await rig.service.process(make_job())
+
+    line = job_line(caplog)
+    assert line.outcome == "retry"
+    assert line.verifier_input_tokens == 2764
+    assert line.tags_dropped == 1
+
+
+async def test_without_a_verifier_nothing_changes(caplog: pytest.LogCaptureFixture) -> None:
+    rig = make_rig()
+    rig.analyzer.result = EIGHT_TAGS
+
+    await rig.service.process(make_job())
+
+    assert stored_tags(rig) == EIGHT_TAGS.tags
+    line = job_line(caplog)
+    for name in (
+        "verifier_latency_ms",
+        "verifier_input_tokens",
+        "verifier_cost_usd",
+        "tags_dropped",
+        "tags_merged",
+    ):
+        assert not hasattr(line, name)
