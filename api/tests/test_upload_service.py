@@ -28,6 +28,7 @@ class InMemoryObjectStore:
         self.objects: dict[str, tuple[bytes, str]] = {}
         self.fail_put_suffix: str | None = None
         self.fail_delete = False
+        self.fail_signing: Exception | None = None
         self.deleted: list[list[str]] = []
         self.signed: list[tuple[list[str], int]] = []
 
@@ -48,6 +49,8 @@ class InMemoryObjectStore:
 
     async def signed_urls(self, paths: Sequence[str], ttl_seconds: int) -> dict[str, str]:
         self.signed.append((list(paths), ttl_seconds))
+        if self.fail_signing is not None:
+            raise self.fail_signing
         return {path: f"https://storage.test/{path}?ttl={ttl_seconds}" for path in paths}
 
 
@@ -241,6 +244,52 @@ async def test_the_result_is_the_inserted_record_and_a_signed_thumbnail_url(
     assert record.status is AnalysisStatus.PENDING
     assert store.signed == [([record.thumbnail_path], SIGNED_URL_TTL)]
     assert thumbnail_url == f"https://storage.test/{record.thumbnail_path}?ttl={SIGNED_URL_TTL}"
+
+
+async def test_a_signing_failure_after_the_insert_still_returns_the_saved_image(
+    service: UploadService,
+    repo: InMemoryImageRepo,
+    store: InMemoryObjectStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store.fail_signing = RuntimeError("storage is saturated")
+
+    with caplog.at_level(logging.WARNING):
+        record, thumbnail_url = await service.upload(USER_ID, "beach.jpg", a_jpeg())
+
+    assert thumbnail_url == ""
+    assert repo.inserted == [
+        NewImage(
+            user_id=USER_ID,
+            filename="beach.jpg",
+            original_path=record.original_path,
+            thumbnail_path=record.thumbnail_path,
+            mime_type="image/jpeg",
+            size_bytes=record.size_bytes,
+            width=640,
+            height=480,
+            content_sha256=record.content_sha256,
+        )
+    ]
+    # The image is saved, so nothing is cleaned up: both files stay for the row to point at.
+    assert store.deleted == []
+    assert set(store.objects) == {record.original_path, record.thumbnail_path}
+    [warning] = [r for r in caplog.records if r.name == "gallery.services.uploads"]
+    assert warning.levelno == logging.WARNING
+    assert warning.thumbnail_path == record.thumbnail_path
+
+
+async def test_a_thumbnail_the_store_leaves_unsigned_gives_an_empty_url(
+    service: UploadService, store: InMemoryObjectStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def sign_nothing(paths: Sequence[str], ttl_seconds: int) -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr(store, "signed_urls", sign_nothing)
+
+    _, thumbnail_url = await service.upload(USER_ID, "beach.jpg", a_jpeg())
+
+    assert thumbnail_url == ""
 
 
 async def test_a_failed_insert_deletes_both_objects_and_raises_the_same_error(

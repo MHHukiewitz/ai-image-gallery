@@ -46,6 +46,10 @@ class UploadService:
         Raises InvalidImageError, before anything is stored, when the file isn't an acceptable
         JPEG or PNG. If a storage or database step fails, the objects already written are removed
         and the error is re-raised.
+
+        Once the row is inserted the upload has succeeded. If the thumbnail then can't be
+        signed, the URL is an empty string: failing the request would report an error for an
+        image that was saved, and the user would upload it again.
         """
         # Decoding is CPU-bound, so it runs in a thread to keep other requests moving.
         info, thumbnail, content_sha256 = await asyncio.to_thread(self._process, data)
@@ -74,12 +78,27 @@ class UploadService:
             await self._remove_objects([original_path, thumbnail_path])
             raise
 
-        urls = await self._store.signed_urls([thumbnail_path], self._signed_url_ttl)
-        return record, urls[thumbnail_path]
+        return record, await self._sign_thumbnail(thumbnail_path)
 
     def _process(self, data: bytes) -> tuple[ImageInfo, bytes, str]:
         info = inspect_image(data, max_bytes=self.max_bytes, max_pixels=self._max_pixels)
         return info, make_thumbnail(data), hashlib.sha256(data).hexdigest()
+
+    async def _sign_thumbnail(self, thumbnail_path: str) -> str:
+        """Return the signed thumbnail URL, or "" when it can't be signed.
+
+        The grid asks for fresh URLs while any is empty, so a later request fills this one in.
+        """
+        try:
+            urls = await self._store.signed_urls([thumbnail_path], self._signed_url_ttl)
+        except Exception:
+            logger.warning(
+                "could not sign the thumbnail of an uploaded image",
+                extra={"thumbnail_path": thumbnail_path},
+                exc_info=True,
+            )
+            return ""
+        return urls.get(thumbnail_path, "")
 
     async def _remove_objects(self, paths: list[str]) -> None:
         """Delete objects a failed upload left behind, without hiding the error that caused it."""
