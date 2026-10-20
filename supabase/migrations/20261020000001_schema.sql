@@ -13,7 +13,13 @@ create table public.images (
   width int not null,
   height int not null,
   content_sha256 char(64) not null,
-  uploaded_at timestamptz not null default now()
+  uploaded_at timestamptz not null default now(),
+  -- The worker downloads original_path with the secret key, so a key outside the owner's folder
+  -- would hand it another tenant's object. Whitelisting the segments also rules out "..".
+  constraint images_original_path_in_owner_folder
+    check (original_path ~ ('^' || user_id::text || '/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+\.[A-Za-z0-9]+$')),
+  constraint images_thumbnail_path_in_owner_folder
+    check (thumbnail_path ~ ('^' || user_id::text || '/[A-Za-z0-9_-]+/[A-Za-z0-9_-]+\.[A-Za-z0-9]+$'))
 );
 
 -- One row per image. It is also the analysis queue: the worker claims rows by ai_processing_status.
