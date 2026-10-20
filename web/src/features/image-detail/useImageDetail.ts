@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 
 import { ApiError, getImage } from "../../lib/api";
 import type { AnalysisStatus, ImageOut } from "../../lib/api";
@@ -31,14 +31,22 @@ export function isNetworkError(error: unknown): error is ApiError {
 }
 
 /**
- * The image shown in the modal, with the full-size `original_url`. A 404 isn't retried: a deleted
- * image stays deleted, and the user is waiting on "Image not found".
+ * The query for one image, with the full-size `original_url`. A 404 isn't retried: a deleted image
+ * stays deleted, and the user is waiting on "Image not found". Also used to preload the neighbors,
+ * so a preloaded image sits in the cache under the key the modal reads.
  */
-export function useImageDetail(imageId: number) {
-  return useQuery({
+export function imageDetailQuery(imageId: number) {
+  return queryOptions({
     queryKey: queryKeys.images.detail(imageId),
     queryFn: ({ signal }) => getImage(imageId, { signal }),
+    retry: (failureCount: number, error: Error) => !isNotFound(error) && failureCount < 1,
+  });
+}
+
+/** The image shown in the modal. Polls while its analysis runs (see `analysisRefetchInterval`). */
+export function useImageDetail(imageId: number) {
+  return useQuery({
+    ...imageDetailQuery(imageId),
     refetchInterval: (query) => analysisRefetchInterval(query.state.data),
-    retry: (failureCount, error) => !isNotFound(error) && failureCount < 1,
   });
 }
