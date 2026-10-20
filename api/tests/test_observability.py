@@ -18,7 +18,7 @@ from gallery.observability import (
     scrub_event,
 )
 
-SIGNED_URL = "https://abc.supabase.co/storage/v1/object/sign/images/u/1/thumb.webp?token=eyJabc.def"
+SIGNED_URL = "https://abc.supabase.co/storage/v1/object/sign/images/u/1/thumb.webp?token=test-token"
 
 
 @pytest.fixture(autouse=True)
@@ -159,7 +159,7 @@ class TestScrubEvent:
 
         value = scrub_event(event)["exception"]["values"][0]["value"]
 
-        assert "eyJabc" not in value
+        assert "test-token" not in value
         assert f"token={REDACTED}" in value
 
     def test_scrubs_breadcrumbs_attached_to_the_event(self) -> None:
@@ -167,7 +167,7 @@ class TestScrubEvent:
 
         crumb = scrub_event(event)["breadcrumbs"]["values"][0]
 
-        assert "eyJabc" not in crumb["message"]
+        assert "test-token" not in crumb["message"]
 
     def test_leaves_events_without_a_request_alone(self) -> None:
         event = {"message": "plain", "level": "error"}
@@ -185,7 +185,7 @@ class TestScrubBreadcrumb:
 
         scrubbed = scrub_breadcrumb(crumb)
 
-        assert "eyJabc" not in scrubbed["message"]
+        assert "test-token" not in scrubbed["message"]
         assert scrubbed["data"]["url"].endswith(f"thumb.webp?token={REDACTED}")
         assert scrubbed["data"]["http.query"] == f"token={REDACTED}&w=1"
         assert scrubbed["data"]["status_code"] == 200
@@ -213,7 +213,7 @@ class TestInitObservability:
     def test_with_dsn_initialises_sentry_with_privacy_options(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("SENTRY_DSN", "https://public@o0.ingest.de.sentry.io/0")
+        monkeypatch.setenv("SENTRY_DSN", "https://test-key@sentry.example.test/1")
         monkeypatch.setenv("SENTRY_ENVIRONMENT", "production")
         monkeypatch.setenv("SENTRY_TRACES_SAMPLE_RATE", "0.25")
         monkeypatch.setenv("RELEASE", "abc1234")
@@ -225,7 +225,7 @@ class TestInitObservability:
         init_observability(Settings(), "worker")
 
         sentry_init.assert_called_once_with(
-            dsn="https://public@o0.ingest.de.sentry.io/0",
+            dsn="https://test-key@sentry.example.test/1",
             environment="production",
             release="abc1234",
             traces_sample_rate=0.25,
@@ -241,7 +241,7 @@ class TestInitObservability:
     @pytest.mark.filterwarnings("ignore:The send_default_pii option is deprecated")
     def test_sentry_sdk_accepts_the_options(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A mock hides typos in option names, so also run against the real SDK once."""
-        monkeypatch.setenv("SENTRY_DSN", "https://public@o0.ingest.de.sentry.io/0")
+        monkeypatch.setenv("SENTRY_DSN", "https://test-key@sentry.example.test/1")
         sdk = observability.sentry_sdk
 
         try:
