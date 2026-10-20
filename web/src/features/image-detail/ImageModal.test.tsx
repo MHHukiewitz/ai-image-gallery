@@ -216,6 +216,32 @@ describe("ImageModal", () => {
     expect(within(dialog).getByRole("button", { name: "Find similar" })).toBeDisabled();
   });
 
+  it("says why Find similar is held in visible text, linked to the button", async () => {
+    vi.mocked(getImage).mockResolvedValue(
+      makeImage({ status: "processing", tags: [], description: null, colors: [] }),
+    );
+    renderGallery();
+    const user = userEvent.setup();
+    const dialog = await openModal(user);
+
+    const hint = within(dialog).getByText("Available once analysis finishes");
+    const button = within(dialog).getByRole("button", { name: "Find similar" });
+    expect(button).toHaveAttribute("aria-describedby", hint.id);
+    expect(button).toHaveAccessibleDescription("Available once analysis finishes");
+    expect(button).not.toHaveAttribute("title");
+  });
+
+  it("shows no hint and no description once Find similar is available", async () => {
+    renderGallery();
+    const user = userEvent.setup();
+    const dialog = await openModal(user);
+
+    const button = within(dialog).getByRole("button", { name: "Find similar" });
+    expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute("aria-describedby");
+    expect(within(dialog).queryByText("Available once analysis finishes")).not.toBeInTheDocument();
+  });
+
   it("shows the analysis as running, then picks up the result by polling", async () => {
     vi.mocked(getImage)
       .mockResolvedValueOnce(
