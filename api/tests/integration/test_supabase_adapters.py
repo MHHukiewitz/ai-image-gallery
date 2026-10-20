@@ -14,17 +14,20 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, cast
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 import httpx
 import pytest
+from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials
 from PIL import Image
 from storage3.exceptions import StorageApiError
 
 from gallery.adapters.supabase_client import AsyncClient, close_client, user_client
 from gallery.adapters.supabase_images import SupabaseImageRepo
 from gallery.adapters.supabase_storage import SupabaseObjectStore
+from gallery.api import deps
 from gallery.config import Settings
 from gallery.domain.models import (
     AllImages,
@@ -35,6 +38,7 @@ from gallery.domain.models import (
     SimilarTo,
     TextQuery,
 )
+from gallery.ports import ImageRepo
 
 pytestmark = pytest.mark.integration
 
@@ -56,7 +60,13 @@ def stack_settings() -> Settings:
             "The local Supabase stack's values are not in the environment. Run `make dev-db`, "
             'then `set -a; eval "$(supabase status -o env)"; set +a`.'
         )
-    return Settings(SUPABASE_URL=url, SUPABASE_PUBLISHABLE_KEY=publishable_key)
+    # The secret only matters if the stack signs user tokens with HS256. The deps use the JWKS
+    # for EC and RSA tokens, which is what current stacks sign with.
+    return Settings(
+        SUPABASE_URL=url,
+        SUPABASE_PUBLISHABLE_KEY=publishable_key,
+        SUPABASE_JWT_SECRET=_stack_value("SUPABASE_JWT_SECRET", "JWT_SECRET"),
+    )
 
 
 @dataclass(frozen=True)
@@ -300,3 +310,56 @@ async def test_an_existing_object_is_not_overwritten(alice: Tenant) -> None:
             await alice.objects.put(path, _png(), "image/png")
     finally:
         await alice.objects.delete([path])
+
+
+# --- authentication against the stack's real tokens ----------------------------------------
+
+
+async def test_a_real_access_token_is_accepted(alice: Tenant, stack_settings: Settings) -> None:
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=alice.access_token)
+
+    user = await deps.get_current_user(credentials, stack_settings)
+
+    assert user.id == alice.id
+    assert user.access_token == alice.access_token
+    assert user.email is not None
+
+
+async def test_the_api_serves_each_user_only_their_own_images(
+    alice: Tenant, bob: Tenant, stack_settings: Settings
+) -> None:
+    # gallery.main builds the app when it is imported, and that reads the settings. Import it
+    # here, after conftest's autouse fixture has set them, instead of at module level.
+    from gallery.main import create_app
+
+    app = create_app()
+    app.dependency_overrides[deps.get_settings] = lambda: stack_settings
+
+    @app.get("/test/images")
+    async def own_image_ids(
+        images: Annotated[ImageRepo, Depends(deps.get_image_repo)],
+    ) -> list[int]:
+        page = await images.list(AllImages(), limit=50, offset=0)
+        return [image.id for image in page.items]
+
+    inserted = await alice.images.insert(_new_image(alice))
+
+    def as_user(tenant: Tenant) -> dict[str, str]:
+        return {"Authorization": f"Bearer {tenant.access_token}"}
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        owners = await http.get("/test/images", headers=as_user(alice))
+        strangers = await http.get("/test/images", headers=as_user(bob))
+        anonymous = await http.get("/test/images")
+        # Corrupting the last characters breaks the signature.
+        forged = await http.get(
+            "/test/images",
+            headers={"Authorization": f"Bearer {alice.access_token[:-4]}AAAA"},
+        )
+
+    assert owners.json() == [inserted.id]
+    assert strangers.json() == []
+    assert anonymous.status_code == 401
+    assert forged.status_code == 401
+    assert forged.json()["error"]["code"] == "unauthorized"
