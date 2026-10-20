@@ -19,6 +19,16 @@ COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
+# The worker's embedding model is downloaded here, at build time, so the runtime never downloads it.
+# It sits after the dependencies and before the source, so a code change doesn't fetch it again, and
+# a new EMBEDDING_MODEL (compose passes it as a build arg) does. The API ships it too, because the
+# two services share this image, but never loads it.
+ARG EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+# fastembed writes a metadata file readable by root only, which the app user would then skip with a
+# warning, so make the whole folder world-readable.
+RUN /opt/venv/bin/python -c "import sys; from fastembed import TextEmbedding; TextEmbedding(model_name=sys.argv[1], cache_dir='/opt/models')" "$EMBEDDING_MODEL" \
+ && chmod -R a+rX /opt/models
+
 # The project installs non-editable, so the runtime stage needs no source tree.
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -31,11 +41,16 @@ FROM python:3.12-slim
 RUN groupadd --system --gid 10001 app \
  && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
 
+# HF_HUB_OFFLINE makes "the runtime never downloads the model" a rule: a model missing from
+# /opt/models (a changed EMBEDDING_MODEL without a rebuild) fails at once instead of fetching it
+# into a folder the app user can't write to.
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HUB_OFFLINE=1
 
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/models /opt/models
 
 WORKDIR /app
 USER app
