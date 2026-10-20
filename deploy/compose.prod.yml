@@ -28,6 +28,9 @@ x-logging: &logging
 x-backend: &backend
   build:
     context: ../api
+    # The image downloads the embedding model at build time, so a new model needs a rebuild.
+    args:
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
   restart: unless-stopped
   logging: *logging
 
@@ -91,7 +94,10 @@ services:
     <<: *backend
     image: ai-gallery-worker:${RELEASE:-prod}
     command: ["python", "-m", "gallery.worker"]
-    mem_limit: 512m
+    # 512m held the analyzer and image decoding. The embedding model adds about 190 MB of resident
+    # memory (the worker's imports sit at 110 MiB, and 296 MiB after embedding 20 texts), and the
+    # limit doubles to keep headroom for decoding phone photos next to it.
+    mem_limit: 1g
     environment:
       <<: *backend-env
       # Only the worker holds the key that bypasses RLS.
@@ -106,6 +112,11 @@ services:
       # Only read when ANALYZER=openai_compat.
       AI_BASE_URL: ${AI_BASE_URL:-}
       AI_API_KEY: ${AI_API_KEY:-}
+      # none (the setting's default) or fastembed. The model is baked into the image at
+      # /opt/models, so only a different model needs EMBEDDING_MODEL, and then a rebuild.
+      EMBEDDER: ${EMBEDDER:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_CACHE_DIR: ${EMBEDDING_CACHE_DIR:-}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-}
       WORKER_POLL_MIN_SECONDS: ${WORKER_POLL_MIN_SECONDS:-}
       WORKER_POLL_MAX_SECONDS: ${WORKER_POLL_MAX_SECONDS:-}
