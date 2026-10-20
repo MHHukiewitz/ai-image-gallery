@@ -3,7 +3,9 @@
 The real `storage3` client runs, so its error parsing is part of what these tests exercise.
 """
 
+import json
 import logging
+import threading
 from collections.abc import AsyncIterator, Callable, Iterator
 
 import httpx
@@ -13,7 +15,7 @@ from storage3.exceptions import StorageApiError
 
 from gallery.adapters import supabase_storage
 from gallery.adapters.supabase_client import AsyncClient, close_client, user_client
-from gallery.adapters.supabase_storage import SupabaseObjectStore
+from gallery.adapters.supabase_storage import SignedUrlCache, SupabaseObjectStore
 from gallery.config import Settings
 
 BASE = "http://localhost:54321/storage/v1"
@@ -60,6 +62,24 @@ class Pauses:
 @pytest.fixture
 def pauses() -> Pauses:
     return Pauses()
+
+
+@pytest.fixture(autouse=True)
+def fresh_shared_cache(monkeypatch: pytest.MonkeyPatch) -> SignedUrlCache:
+    """Give each test its own process-wide cache, so signed URLs don't leak between tests."""
+    cache = SignedUrlCache()
+    monkeypatch.setattr(supabase_storage, "_signed_urls", cache)
+    return cache
+
+
+class Clock:
+    """A clock the test winds forward by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 @pytest.fixture
@@ -338,3 +358,207 @@ async def test_a_duplicate_on_a_retry_means_the_first_try_landed(
     await store.put(PATH, b"data", "image/webp")
 
     assert upload.call_count == 2
+
+
+# --- signed-url cache ----------------------------------------------------------------------
+
+
+def sign_response(*paths: str) -> httpx.Response:
+    return httpx.Response(200, json=[signed_entry(path) for path in paths])
+
+
+def signed_paths(route: respx.Route, call: int) -> list[str]:
+    return json.loads(route.calls[call].request.content)["paths"]
+
+
+async def test_a_second_call_is_served_from_the_cache(
+    store: SupabaseObjectStore, storage_http: respx.MockRouter
+) -> None:
+    sign = storage_http.post(SIGN_URL).mock(return_value=sign_response(PATH))
+
+    first = await store.signed_urls([PATH], 3600)
+    second = await store.signed_urls([PATH], 3600)
+
+    assert first == second == {PATH: f"{BASE}/object/sign/images/{PATH}?token=t"}
+    assert sign.call_count == 1
+
+
+async def test_the_cache_is_shared_by_separately_built_stores(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    sign = storage_http.post(SIGN_URL).mock(return_value=sign_response(PATH))
+
+    await SupabaseObjectStore(client, "images").signed_urls([PATH], 3600)
+    await SupabaseObjectStore(client, "images").signed_urls([PATH], 3600)
+
+    assert sign.call_count == 1
+
+
+async def test_only_the_cache_misses_are_signed_and_in_one_call(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    store = SupabaseObjectStore(client, "images", cache=SignedUrlCache())
+    sign = storage_http.post(SIGN_URL).mock(
+        side_effect=[sign_response("a"), sign_response("b", "c")]
+    )
+    await store.signed_urls(["a"], 3600)
+
+    urls = await store.signed_urls(["a", "b", "c"], 3600)
+
+    assert sign.call_count == 2
+    assert signed_paths(sign, 1) == ["b", "c"]
+    assert set(urls) == {"a", "b", "c"}
+
+
+async def test_a_fully_cached_page_makes_no_request(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    store = SupabaseObjectStore(client, "images", cache=SignedUrlCache())
+    sign = storage_http.post(SIGN_URL).mock(return_value=sign_response("a", "b"))
+    await store.signed_urls(["a", "b"], 3600)
+
+    await store.signed_urls(["b", "a"], 3600)
+
+    assert sign.call_count == 1
+
+
+async def test_a_path_asked_for_twice_is_signed_once(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    store = SupabaseObjectStore(client, "images", cache=SignedUrlCache())
+    sign = storage_http.post(SIGN_URL).mock(return_value=sign_response("a"))
+
+    await store.signed_urls(["a", "a"], 3600)
+
+    assert signed_paths(sign, 0) == ["a"]
+
+
+async def test_an_entry_close_to_expiry_is_signed_again(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    clock = Clock()
+    store = SupabaseObjectStore(client, "images", cache=SignedUrlCache(clock=clock))
+    sign = storage_http.post(SIGN_URL).mock(return_value=sign_response("a"))
+    await store.signed_urls(["a"], 3600)
+
+    clock.now += 3600 - 11 * 60  # 11 minutes of validity left: still reused
+    await store.signed_urls(["a"], 3600)
+    assert sign.call_count == 1
+
+    clock.now += 2 * 60  # 9 minutes left: too close to expiry
+    await store.signed_urls(["a"], 3600)
+    assert sign.call_count == 2
+
+
+async def test_a_refreshed_entry_is_reused_again(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    clock = Clock()
+    store = SupabaseObjectStore(client, "images", cache=SignedUrlCache(clock=clock))
+    sign = storage_http.post(SIGN_URL).mock(return_value=sign_response("a"))
+    await store.signed_urls(["a"], 3600)
+    clock.now += 3600
+    await store.signed_urls(["a"], 3600)
+
+    await store.signed_urls(["a"], 3600)
+
+    assert sign.call_count == 2
+
+
+async def test_the_ttl_and_the_bucket_are_part_of_the_key(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    cache = SignedUrlCache()
+    sign = storage_http.post(SIGN_URL).mock(return_value=sign_response("a"))
+    other_sign = storage_http.post(f"{BASE}/object/sign/other").mock(
+        return_value=sign_response("a")
+    )
+
+    await SupabaseObjectStore(client, "images", cache=cache).signed_urls(["a"], 3600)
+    await SupabaseObjectStore(client, "images", cache=cache).signed_urls(["a"], 7200)
+    await SupabaseObjectStore(client, "other", cache=cache).signed_urls(["a"], 3600)
+
+    assert (sign.call_count, other_sign.call_count) == (2, 1)
+
+
+async def test_a_path_that_could_not_be_signed_is_not_cached(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    store = SupabaseObjectStore(client, "images", cache=SignedUrlCache())
+    missing = {"path": "gone", "signedURL": None, "error": "Object not found"}
+    sign = storage_http.post(SIGN_URL).mock(
+        return_value=httpx.Response(200, json=[missing, signed_entry("a")])
+    )
+
+    urls = await store.signed_urls(["gone", "a"], 3600)
+    await store.signed_urls(["gone", "a"], 3600)
+
+    assert set(urls) == {"a"}
+    assert signed_paths(sign, 1) == ["gone"]
+
+
+async def test_a_failed_signing_call_caches_nothing(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    cache = SignedUrlCache()
+    store = SupabaseObjectStore(client, "images", cache=cache)
+    storage_http.post(SIGN_URL).mock(side_effect=lambda request: storage_error(400))
+
+    with pytest.raises(StorageApiError):
+        await store.signed_urls(["a"], 3600)
+
+    assert len(cache) == 0
+
+
+async def test_the_cache_keeps_at_most_its_bound_and_drops_the_least_recently_used(
+    client: AsyncClient, storage_http: respx.MockRouter
+) -> None:
+    cache = SignedUrlCache(max_entries=3)
+    store = SupabaseObjectStore(client, "images", cache=cache)
+    sign = storage_http.post(SIGN_URL).mock(
+        side_effect=lambda request: sign_response(*json.loads(request.content)["paths"])
+    )
+    await store.signed_urls(["a", "b", "c"], 3600)
+    await store.signed_urls(["a"], 3600)  # a is now the most recently used
+
+    await store.signed_urls(["d"], 3600)  # pushes out b, the least recently used
+
+    assert len(cache) == 3
+    sign.reset()
+    await store.signed_urls(["a", "c", "d"], 3600)
+    assert sign.call_count == 0
+    await store.signed_urls(["b"], 3600)
+    assert sign.call_count == 1
+
+
+def test_the_default_bound_is_five_thousand_entries() -> None:
+    cache = SignedUrlCache()
+    for index in range(5_001):
+        cache.put(("images", f"path-{index}", 3600), "url", 3600)
+
+    assert len(cache) == 5_000
+    assert cache.get(("images", "path-0", 3600)) is None
+    assert cache.get(("images", "path-1", 3600)) == "url"
+
+
+def test_threads_can_share_the_cache() -> None:
+    cache = SignedUrlCache(max_entries=50)
+    failures: list[BaseException] = []
+
+    def hammer(offset: int) -> None:
+        try:
+            for index in range(2_000):
+                key = ("images", f"path-{(index + offset) % 80}", 3600)
+                cache.put(key, "url", 3600)
+                cache.get(key)
+        except BaseException as error:
+            failures.append(error)
+
+    threads = [threading.Thread(target=hammer, args=(offset,)) for offset in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert failures == []
+    assert len(cache) <= 50

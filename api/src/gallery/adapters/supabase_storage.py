@@ -11,6 +11,9 @@ every call is retried with jittered backoff before the error reaches the caller.
 import asyncio
 import logging
 import random
+import threading
+import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Sequence
 
 import httpx
@@ -29,6 +32,66 @@ _BACKOFF_BASE_SECONDS = 0.2
 _BACKOFF_CAP_SECONDS = 2.0
 
 _DUPLICATE_STATUS = 409
+
+# A cached URL is reused only while it has at least this long left, so a page that holds one
+# never shows a link that dies before the user clicks it.
+_CACHE_MIN_VALIDITY_SECONDS = 10 * 60
+_CACHE_MAX_ENTRIES = 5_000
+
+type CacheKey = tuple[str, str, int]
+
+
+class SignedUrlCache:
+    """A thread-safe LRU of signed URLs keyed by `(bucket, path, ttl_seconds)`.
+
+    The lock guards plain dict operations and is never held across an `await`, so the same
+    instance is safe from worker threads and from many tasks on the event loop.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_entries: int = _CACHE_MAX_ENTRIES,
+        min_validity_seconds: float = _CACHE_MIN_VALIDITY_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._max_entries = max_entries
+        self._min_validity_seconds = min_validity_seconds
+        self._clock = clock
+        self._entries: OrderedDict[CacheKey, tuple[str, float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def get(self, key: CacheKey) -> str | None:
+        """Return the URL if it stays valid for the minimum time, and mark it recently used."""
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            url, expires_at = entry
+            if expires_at - self._clock() < self._min_validity_seconds:
+                del self._entries[key]
+                return None
+            self._entries.move_to_end(key)
+            return url
+
+    def put(self, key: CacheKey, url: str, ttl_seconds: int) -> None:
+        with self._lock:
+            self._entries[key] = (url, self._clock() + ttl_seconds)
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+
+
+# One cache for the whole process, shared by the adapter that every request builds. Sharing it
+# across users is safe because a path reaches `signed_urls` only from a row the caller's own RLS
+# let them read (or from their own upload), so a hit can't give a request a URL for a file that
+# request couldn't have signed itself. Don't feed this cache paths that did not come from such a
+# row.
+_signed_urls = SignedUrlCache()
 
 
 def _status_of(error: BaseException) -> int | None:
@@ -57,10 +120,13 @@ class SupabaseObjectStore:
         client: AsyncClient,
         bucket: str,
         *,
+        cache: SignedUrlCache | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         uniform: Callable[[float, float], float] = random.uniform,
     ) -> None:
+        self._bucket_name = bucket
         self._bucket = client.storage.from_(bucket)
+        self._cache = _signed_urls if cache is None else cache
         # Injected so tests can run the retries without waiting or randomness.
         self._sleep = sleep
         self._uniform = uniform
@@ -92,14 +158,25 @@ class SupabaseObjectStore:
             await self._with_retries("delete", lambda: self._bucket.remove(list(paths)))
 
     async def signed_urls(self, paths: Sequence[str], ttl_seconds: int) -> dict[str, str]:
-        """Sign all paths in one request.
+        """Sign all paths, reusing cached URLs and asking Storage for the rest in one request.
 
         A path that can't be signed, such as a missing object, is left out of the result.
         """
-        if not paths:
-            return {}
+        urls: dict[str, str] = {}
+        misses: list[str] = []
+        for path in dict.fromkeys(paths):
+            cached = self._cache.get((self._bucket_name, path, ttl_seconds))
+            if cached is None:
+                misses.append(path)
+            else:
+                urls[path] = cached
+        if misses:
+            urls.update(await self._sign(misses, ttl_seconds))
+        return urls
+
+    async def _sign(self, paths: list[str], ttl_seconds: int) -> dict[str, str]:
         entries = await self._with_retries(
-            "signed_urls", lambda: self._bucket.create_signed_urls(list(paths), ttl_seconds)
+            "signed_urls", lambda: self._bucket.create_signed_urls(paths, ttl_seconds)
         )
         urls: dict[str, str] = {}
         for entry in entries:
@@ -111,6 +188,9 @@ class SupabaseObjectStore:
                 )
                 continue
             urls[entry["path"]] = signed_url
+            self._cache.put(
+                (self._bucket_name, entry["path"], ttl_seconds), signed_url, ttl_seconds
+            )
         return urls
 
     async def _with_retries[T](self, operation: str, call: Callable[[], Awaitable[T]]) -> T:
