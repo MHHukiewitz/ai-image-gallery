@@ -1,6 +1,6 @@
 """Gallery routes: list, detail, delete and reanalyze. Stubs until the gallery service lands."""
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.exceptions import RequestValidationError
 
 from gallery.api.schemas import ErrorResponse, ImageOut, ImagePage
@@ -50,11 +50,11 @@ async def get_image(image_id: int) -> ImageOut:
     raise HTTPException(status_code=501)
 
 
-@router.delete("/api/v1/images/{image_id}", status_code=204)
+@router.delete("/api/v1/images/{image_id}", status_code=204, response_class=Response)
 async def delete_image(image_id: int) -> None:
     raise HTTPException(status_code=501)
 
 
-@router.post("/api/v1/images/{image_id}/reanalyze", status_code=202)
+@router.post("/api/v1/images/{image_id}/reanalyze", status_code=202, response_class=Response)
 async def reanalyze_image(image_id: int) -> None:
     raise HTTPException(status_code=501)

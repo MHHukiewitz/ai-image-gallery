@@ -189,3 +189,12 @@ def test_openapi_exposes_the_schemas_the_web_types_need(client: TestClient) -> N
     schemas = client.get("/api/openapi.json").json()["components"]["schemas"]
 
     assert {"ImageOut", "ImagePage", "AnalysisOut", "ErrorResponse", "ErrorDetail"} <= set(schemas)
+
+
+def test_every_422_is_documented_as_the_error_shape(client: TestClient) -> None:
+    spec = client.get("/api/openapi.json").json()
+
+    for path, operations in spec["paths"].items():
+        for method, operation in operations.items():
+            media = operation["responses"]["422"]["content"]["application/json"]
+            assert media["schema"] == {"$ref": "#/components/schemas/ErrorResponse"}, (method, path)
