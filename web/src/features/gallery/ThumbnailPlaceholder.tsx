@@ -1,13 +1,14 @@
 /**
  * What a tile shows while it has no usable thumbnail: no URL yet, or one that won't load. It fills
- * the tile, so the grid keeps its shape. The `<img>` beside it carries the name for screen readers.
+ * the tile, so the grid keeps its shape. It has no background of its own, so the tile's dominant
+ * color shows through. The `<img>` beside it carries the name for screen readers.
  */
 export function ThumbnailPlaceholder() {
   return (
     <span
       aria-hidden="true"
       data-testid="thumbnail-placeholder"
-      className="absolute inset-0 flex items-center justify-center bg-zinc-200 text-zinc-400 dark:bg-zinc-800 dark:text-zinc-600"
+      className="absolute inset-0 flex items-center justify-center text-zinc-400 dark:text-zinc-600"
     >
       <svg
         viewBox="0 0 24 24"
