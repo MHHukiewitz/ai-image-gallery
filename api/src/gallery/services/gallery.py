@@ -7,7 +7,7 @@ another user's image look the same here, and both raise NotFoundError.
 import logging
 
 from gallery.domain.errors import NotFoundError
-from gallery.domain.models import GalleryQuery, ImageRecord, Page
+from gallery.domain.models import GalleryQuery, ImageRecord, Page, SimilarTo
 from gallery.ports import ImageRepo, ObjectStore
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,13 @@ class GalleryService:
 
         All thumbnails are signed in one storage call, so a page costs one round trip however
         many images it holds. A thumbnail that can't be signed is missing from the dict.
+
+        A "similar to" search for an image the caller can't see raises NotFoundError. Without
+        this check the search would return an empty page, which can't be told apart from an image
+        with nothing similar to it.
         """
+        if isinstance(query, SimilarTo) and await self._repo.get(query.image_id) is None:
+            raise NotFoundError("Image not found.")
         page = await self._repo.list(query, limit=limit, offset=offset)
         thumbnail_urls = await self._store.signed_urls(
             [image.thumbnail_path for image in page.items], self._signed_url_ttl
