@@ -40,7 +40,7 @@ describe("Button", () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 
-  it.each(["primary", "secondary", "ghost", "danger"] as const)(
+  it.each(["primary", "secondary", "ghost", "danger", "danger-secondary"] as const)(
     "renders the %s variant",
     (variant) => {
       render(<Button variant={variant}>Go</Button>);
@@ -48,6 +48,14 @@ describe("Button", () => {
       expect(screen.getByRole("button", { name: "Go" })).toBeEnabled();
     },
   );
+
+  it("draws the secondary danger variant as red text on a plain button, not a filled red one", () => {
+    render(<Button variant="danger-secondary">Delete</Button>);
+
+    const button = screen.getByRole("button", { name: "Delete" });
+    expect(button).toHaveClass("bg-white", "text-red-700");
+    expect(button).not.toHaveClass("bg-red-600");
+  });
 });
 
 describe("Input", () => {

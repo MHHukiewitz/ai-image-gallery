@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 import { FOCUS_COLOR, FOCUS_RING } from "./focusRing";
 import { Spinner } from "./Spinner";
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "danger-secondary";
 export type ButtonSize = "sm" | "md";
 
 // Dark-mode danger uses red-600 too: white text on red-500 is below AA contrast.
@@ -15,6 +15,9 @@ const VARIANTS: Record<ButtonVariant, string> = {
     "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800",
   ghost: "text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800",
   danger: "bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700",
+  // Outlined in red text, for a destructive action that shouldn't be the loudest thing on screen.
+  "danger-secondary":
+    "border border-red-300 bg-white text-red-700 hover:bg-red-50 dark:border-red-900 dark:bg-zinc-900 dark:text-red-400 dark:hover:bg-red-950",
 };
 
 // 44 px tall on phones, the WCAG 2.5.5 touch size; the compact height returns from `sm` up.
