@@ -44,6 +44,7 @@ flowchart LR
     T8["#8 Upload ingest"]:::sonnet
     T12["#12 Read endpoints"]:::haiku
     T11["#11 Worker"]:::sonnet
+    T31["#31 Anthropic adapter"]:::sonnet
     T6["#6 AI research + benchmark"]:::sonnet
   end
   subgraph W5["Wave 5"]
@@ -72,7 +73,8 @@ flowchart LR
   T3 --> T7 & T4 & T5
   T4 --> T11 & T12
   T7 --> T11 & T8 & T12
-  T9 --> T11 & T6
+  T9 --> T11 & T31
+  T31 --> T6 & T22
   T10 --> T11
   T28 --> T6
   T5 --> T13
@@ -111,7 +113,7 @@ flowchart LR
 | Model | Used for | Tickets |
 |---|---|---|
 | **Opus** | Security-critical work where a subtle mistake leaks tenant data | #3 |
-| **Sonnet** | Feature work across several files that needs some judgment or tricky library integration | #1, #4, #5, #6, #7, #8, #9, #11, #14, #16, #17, #19, #22, #24 |
+| **Sonnet** | Feature work across several files that needs some judgment or tricky library integration | #1, #4, #5, #6, #7, #8, #9, #11, #14, #16, #17, #19, #22, #24, #31 |
 | **Haiku** | Fully specified, mechanical work with a small blast radius | #2, #10, #12, #13, #15, #18, #20, #21, #23, #25 |
 | **Mike** | Accounts, DNS and secrets, which agents must not handle | #26, #27, #28, #30 (optional) |
 

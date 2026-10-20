@@ -24,7 +24,7 @@ The grading weights are: core functionality 35%, code quality 25%, UI/UX 20%, AI
 | D4 | **Ingest is synchronous** in the API: validate, thumbnail, store, insert. **AI enrichment is asynchronous** in a worker. | The thumbnail appears instantly and the AI never blocks the upload. |
 | D5 | **The queue is `image_metadata.ai_processing_status`**, claimed through an RPC that uses `FOR UPDATE SKIP LOCKED`. | It's durable, needs no Redis, and gives one source of truth for status. |
 | D6 | **Dominant colors are computed locally** (Pillow quantize). AI is used only for tags and the sentence. | Local extraction is free and deterministic, and more accurate than hex codes guessed by an LLM. Colors still work when the AI fails. |
-| D7 | An **`ImageAnalyzer` port** with one **OpenAI-compatible adapter** that covers OpenRouter, OpenAI, Gemini, Hetzner and Ollama, plus a **`FakeAnalyzer`**. | Swapping providers is a config change. The research benchmark reuses the adapter, and tests and offline dev need no key. |
+| D7 | An **`ImageAnalyzer` port** with three adapters: a **native Anthropic adapter** (the production path), an **OpenAI-compatible adapter** (benchmark comparisons and fallback) and a **`FakeAnalyzer`**. | Claude runs on the Max plan's monthly API credits. The official SDK gives typed structured outputs, typed errors and refusal handling. The OpenAI-compatible adapter keeps the comparison honest and keeps another vendor one config change away. Tests and offline dev need no key. |
 | D8 | **Search and similarity live in Postgres SQL functions** (`security invoker`). | They run under RLS (so search is automatically per-user), paginate in the DB and need no vector DB. |
 | D9 | An **AI result cache** keyed by `(content_sha256, analyzer_id)`. | Re-uploads and re-analysis with the same model cost nothing. Changing the prompt version invalidates the cache. |
 | D10 | **React + Vite + TypeScript + Tailwind + TanStack Query**, served as a static SPA by nginx. | This matches the challenge stack and is cheap to host. TanStack Query handles caching, pagination and polling. |
@@ -48,7 +48,7 @@ flowchart LR
     PG[(Postgres + RLS)]
     ST[(Storage · private bucket)]
   end
-  AIP[Vision LLM API]
+  AIP[Claude API · Anthropic]
 
   SPA -- "gallery.hukiewitz.com" --> WEB
   SPA -- "email / password" --> AUTH
@@ -78,7 +78,7 @@ sequenceDiagram
   participant A as API
   participant S as Supabase (PG + Storage)
   participant W as Worker
-  participant L as Vision LLM
+  participant L as Claude API
   B->>A: POST /api/v1/images (1 file/request, XHR progress, 3 concurrent)
   A->>A: verify JWT · sniff JPEG/PNG · ≤10 MB · ≤40 MP · EXIF-orient · 300×300 WebP · sha256
   A->>S: upload {uid}/{uuid}/original.ext + thumb.webp (as user)
@@ -222,14 +222,25 @@ The prompt is versioned (`PROMPT_VERSION`), and `analyzer_id = f"{provider}:{mod
 
 **Cost control.** The image is downscaled to a 1024 px long side as JPEG q85 before sending. This uses Everlast's `normalize_image` pattern. Colors never cost tokens.
 
-**Provider choice.** Ticket #6 decides it with a measured benchmark, which is the deliverable for the 15% research item. It runs 20 fixture images through at least 3 candidates via the existing OpenRouter key and records cost per 1k images, p50/p95 latency, JSON validity rate and a 1–5 quality score. The doc compares those results against classic vision APIs and self-hosting:
+**Provider choice.** We use **Claude through the Anthropic API**. It's paid from the Max plan's monthly API credits, so this demo's volume costs nothing extra. **Mike picks the model** from #6's measured benchmark, which is the deliverable for the 15% research item.
+
+The benchmark runs 20 fixture images through these candidates:
+- **Claude:** `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`, directly through the native adapter (#31);
+- **Non-Claude reference:** at least one model through OpenRouter.
+
+It records cost per 1k images, p50/p95 latency, JSON validity rate and a 1–5 quality score. The doc compares those results against classic vision APIs and self-hosting:
 
 - **Vision LLMs (one call returns tags and a sentence):** Gemini Flash/Flash-Lite class, OpenAI mini/nano class, Claude Haiku class.
 - **Classic vision APIs:** Google Cloud Vision and AWS Rekognition. They return labels and colors but no sentence, so a second service would be needed.
 - **Self-hosted:** Ollama with a Qwen-VL class model on the VPS. It's free and private, but too slow on CPU.
 - **Typed decision model:** TypeSafe Jev 1.14, which has experimental image input. It only returns typed answers (Choice, Score, Boolean, Box), so it can't write the sentence and can only tag from a fixed vocabulary. It's listed in the comparison but not benchmarked. Our pipeline could later use it as a cheap verifier for tags or moderation.
 
-Expected outcome: a cheap Flash-Lite or nano-class vision LLM. The doc will pick from measured numbers, not prior assumptions.
+**Rough cost per image**, about 1.4K input tokens with a few hundred output tokens at low effort:
+- Haiku 5.5: well under $0.001
+- Sonnet 5.5: under $0.01
+- Opus 5.5: about $0.01
+
+All three fit easily within $200 a month for a demo. #6 replaces these estimates with measured numbers.
 
 **Colors.** The worker downsamples to 128 px and runs `Image.quantize(colors=8, method=MEDIANCUT)`. It ranks the palette by pixel count and drops near-duplicates (ΔE < 10). Then it returns the top 3 as `#rrggbb`.
 
@@ -258,7 +269,7 @@ ai-image-gallery/
 │     ├─ domain/                pure, no I/O: models.py, colors.py, thumbnails.py, validation.py
 │     ├─ ports.py               Protocols: ImageRepo, ObjectStore, ImageAnalyzer, JobQueue
 │     └─ adapters/              supabase_client.py, supabase_images.py, supabase_storage.py,
-│                                supabase_jobs.py, supabase_cache.py, analyzers/{openai_compat,fake}.py
+│                                supabase_jobs.py, supabase_cache.py, analyzers/{anthropic,openai_compat,fake}.py
 ├─ web/                         React · Vite · TS · Tailwind · TanStack Query
 │  └─ src/
 │     ├─ app/                   router, providers, layout
@@ -330,7 +341,7 @@ That project's stack is Next.js + FastAPI + SQLAlchemy/pgvector + arq/Redis + it
 **Worth taking:**
 
 - `normalize_image`, `image_data_url` and `vision_messages` from `apps/api/app/services/ingest.py`, about 40 lines, which go into the OpenAI-compatible adapter.
-- The **existing OpenRouter key** (and the Hetzner key) for the benchmark, so no new provider accounts are needed to compare 3 models.
+- The **existing OpenRouter key** for the benchmark's non-Claude reference model, so no new account is needed. Claude itself runs on the Max plan's API credits.
 
 **Not reused:**
 
@@ -338,7 +349,7 @@ That project's stack is Next.js + FastAPI + SQLAlchemy/pgvector + arq/Redis + it
 - **SQLAlchemy models:** our schema is small and lives in SQL migrations.
 - **arq/Redis:** the DB queue replaces it.
 - **Next.js:** a Vite SPA is lighter.
-- **litellm:** it's a heavy dependency for one call, so we use the `openai` SDK with a `base_url` instead.
+- **litellm:** it's a heavy dependency for one call. We use the official `anthropic` SDK for Claude, and the `openai` SDK with a `base_url` for the comparison.
 - **Caddy:** we use Traefik.
 
 The useful deploy reuse comes from **ops-server**, not Everlast: the Traefik label pattern, the `sites` network, `security-headers@file`, the rsync deploy and Uptime Kuma.
@@ -355,5 +366,6 @@ The ticket breakdown, dependencies, agent models and the critical-path diagram l
 | Supabase | Supabase Cloud, free tier, EU (Frankfurt). Local dev uses `supabase start`. |
 | Email confirmation | **Off**, so reviewers can sign up instantly. This is documented in the README. Resend SMTP can be added later. |
 | Repo | `MHHukiewitz/ai-image-gallery`, **public**. The local checkout is `~/Workspace/ai-image-gallery`. |
+| AI provider | Claude through the Anthropic API, paid from the Max plan's monthly API credits, with a dedicated key and a spend-limited workspace (#28). Mike picks the model from #6's benchmark of Haiku 5.5, Sonnet 5.5 and Opus 5.5. |
 | Observability | JSON logs and Sentry for errors, using Sentry's EU region (optional, with #30). No Dagster, MLOps platform, Langfuse or PostHog. |
 | Jev (TypeSafe) | Not in the pipeline. It's typed-answer only and image input is experimental. It's listed as a rejected option in the research doc. |

@@ -22,7 +22,7 @@ These rules apply to every ticket. If your issue contradicts them, follow the is
 - `api/` is the HTTP layer: routes, dependencies, schemas and error mapping. **No business logic.**
 - `services/` holds the use cases. They depend only on `ports.py` Protocols and `domain/`. **They never import FastAPI or supabase.**
 - `domain/` is pure: no I/O, no framework imports. It's easy to unit-test.
-- `adapters/` implements the ports with Supabase or AI SDKs. Nothing outside `adapters/` imports `supabase` or `openai`.
+- `adapters/` implements the ports with Supabase or AI SDKs. Nothing outside `adapters/` imports `supabase`, `anthropic` or `openai`.
 - The API never uses the Supabase secret key. Only the worker does, through `adapters/supabase_client.service_client`.
 
 **Web side** (`web/src/`):
@@ -57,6 +57,7 @@ These rules apply to every ticket. If your issue contradicts them, follow the is
   - Web logic gets Vitest tests.
 - Tests needing the local Supabase stack are marked `@pytest.mark.integration`.
 - Never call a real AI provider in tests. Use `FakeAnalyzer` or an HTTP mock.
+- Claude code follows the `claude-api` skill: load it before touching `adapters/analyzers/anthropic.py`, and use the official `anthropic` SDK, never an OpenAI-compatible shim.
 
 ## Secrets
 
