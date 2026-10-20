@@ -217,3 +217,161 @@ create trigger image_metadata_derive
 
 -- Fill the derived columns for rows that existed before this migration (a no-op on a fresh database).
 update public.image_metadata set tags = tags;
+
+-- Search functions ------------------------------------------------------------------------------
+-- Each returns the image_details columns, in the same order, plus score. They read the base tables
+-- because image_details leaves out search_vector and colors_lab, but the RLS applies just the same.
+-- lim and off are clamped at 0, since a negative LIMIT or OFFSET is an error. A NULL lim returns nothing.
+
+-- Text search over tags and description. Every word of q must match as a prefix, so results update
+-- as the user types. Rank is ts_rank_cd plus a boost when q is exactly one of the image's tags.
+-- Words are cut at non-alphanumerics, so q can't inject tsquery syntax. Blank input returns nothing.
+create function public.search_images(q text, lim int default 20, off int default 0)
+returns table (
+  id bigint,
+  user_id uuid,
+  filename text,
+  original_path text,
+  thumbnail_path text,
+  mime_type text,
+  size_bytes int,
+  width int,
+  height int,
+  content_sha256 text,
+  uploaded_at timestamptz,
+  description text,
+  tags text[],
+  colors text[],
+  ai_processing_status text,
+  last_error text,
+  score float8
+)
+language sql stable security invoker
+begin atomic
+  with parsed as (
+    select
+      to_tsquery('english', string_agg(word || ':*', ' & ')) as tsquery,
+      lower(btrim(q)) as exact_tag
+    from regexp_split_to_table(lower(q), '[^[:alnum:]]+') as word
+    where word <> ''
+  )
+  select
+    i.id, i.user_id, i.filename, i.original_path, i.thumbnail_path, i.mime_type, i.size_bytes,
+    i.width, i.height, i.content_sha256, i.uploaded_at,
+    m.description, m.tags, m.colors, m.ai_processing_status, m.last_error,
+    ts_rank_cd(m.search_vector, parsed.tsquery)
+      + case
+          when exists (select 1 from unnest(m.tags) as tag where lower(tag) = parsed.exact_tag)
+            then public.search_exact_tag_boost()
+          else 0
+        end as score
+  from parsed
+  join public.image_metadata m on m.search_vector @@ parsed.tsquery
+  join public.images i on i.id = m.image_id
+  order by score desc, i.uploaded_at desc, i.id desc
+  limit greatest(lim, 0) offset greatest(off, 0);
+end;
+
+-- Images like the target: 0.7 · tag cosine + 0.3 · palette closeness, best first. The target is
+-- read through RLS, so someone else's id (or a missing one) finds no target and returns nothing.
+create function public.similar_images(target_id bigint, lim int default 20, off int default 0)
+returns table (
+  id bigint,
+  user_id uuid,
+  filename text,
+  original_path text,
+  thumbnail_path text,
+  mime_type text,
+  size_bytes int,
+  width int,
+  height int,
+  content_sha256 text,
+  uploaded_at timestamptz,
+  description text,
+  tags text[],
+  colors text[],
+  ai_processing_status text,
+  last_error text,
+  score float8
+)
+language sql stable security invoker
+begin atomic
+  select
+    i.id, i.user_id, i.filename, i.original_path, i.thumbnail_path, i.mime_type, i.size_bytes,
+    i.width, i.height, i.content_sha256, i.uploaded_at,
+    m.description, m.tags, m.colors, m.ai_processing_status, m.last_error,
+    similarity.score
+  from public.image_metadata target
+  join public.image_metadata m on m.image_id <> target.image_id
+  join public.images i on i.id = m.image_id
+  cross join lateral (
+    -- offset 0 keeps the planner from copying this expression into the WHERE and ORDER BY
+    -- below, which would compute the score three times per candidate.
+    select public.search_tag_weight() * public.tag_cosine(target.tags, m.tags)
+      + public.search_color_weight() * public.color_similarity(target.colors_lab, m.colors_lab) as score
+    offset 0
+  ) as similarity
+  where target.image_id = target_id
+    and similarity.score > public.search_similar_min_score()
+  order by similarity.score desc, i.id desc
+  limit greatest(lim, 0) offset greatest(off, 0);
+end;
+
+-- Images with a color close to hex, nearest first. dist is the smallest delta E between hex and any
+-- of the image's colors, and the score is 1 - dist / 100. Malformed hex returns nothing.
+create function public.images_by_color(hex text, lim int default 20, off int default 0)
+returns table (
+  id bigint,
+  user_id uuid,
+  filename text,
+  original_path text,
+  thumbnail_path text,
+  mime_type text,
+  size_bytes int,
+  width int,
+  height int,
+  content_sha256 text,
+  uploaded_at timestamptz,
+  description text,
+  tags text[],
+  colors text[],
+  ai_processing_status text,
+  last_error text,
+  score float8
+)
+language sql stable security invoker
+begin atomic
+  with query as (
+    select public.hex_to_lab(hex) as lab
+  )
+  select
+    i.id, i.user_id, i.filename, i.original_path, i.thumbnail_path, i.mime_type, i.size_bytes,
+    i.width, i.height, i.content_sha256, i.uploaded_at,
+    m.description, m.tags, m.colors, m.ai_processing_status, m.last_error,
+    1 - nearest.dist / 100 as score
+  from query
+  cross join public.image_metadata m
+  join public.images i on i.id = m.image_id
+  cross join lateral (
+    -- offset 0 keeps the planner from computing dist again in the WHERE and ORDER BY below.
+    select public.min_delta_e76(query.lab, m.colors_lab) as dist
+    offset 0
+  ) as nearest
+  where nearest.dist <= public.search_color_max_delta_e()
+  order by nearest.dist, i.id desc
+  limit greatest(lim, 0) offset greatest(off, 0);
+end;
+
+-- Only signed-in users search. service_role bypasses RLS, so a search run as the worker would read
+-- every tenant's images, and nothing needs that.
+revoke all on function
+  public.search_images(text, int, int),
+  public.similar_images(bigint, int, int),
+  public.images_by_color(text, int, int)
+  from public, anon, authenticated, service_role;
+
+grant execute on function
+  public.search_images(text, int, int),
+  public.similar_images(bigint, int, int),
+  public.images_by_color(text, int, int)
+  to authenticated;
