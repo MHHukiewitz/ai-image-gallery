@@ -223,4 +223,34 @@ describe("ImageCard", () => {
       expect(badge()).not.toBeInTheDocument();
     });
   });
+
+  describe("while the thumbnail loads", () => {
+    it("shows the image's first dominant color as the tile's background", () => {
+      renderCard(makeImage(1, { colors: ["#aabbcc", "#112233"] }));
+
+      expect(screen.getByRole("button")).toHaveStyle({ backgroundColor: "#aabbcc" });
+    });
+
+    it("keeps the default background when the analysis has no color yet", () => {
+      renderCard(makeImage(1, { status: "pending", colors: [] }));
+
+      expect(screen.getByRole("button").style.backgroundColor).toBe("");
+    });
+
+    it("lets the dominant color show through a placeholder for a missing thumbnail", () => {
+      renderCard(makeImage(1, { colors: ["#aabbcc"] }, { thumbnail_url: "" }));
+
+      expect(screen.getByTestId("thumbnail-placeholder")).not.toHaveClass("bg-zinc-200");
+      expect(screen.getByRole("button")).toHaveStyle({ backgroundColor: "#aabbcc" });
+    });
+
+    it("fades the thumbnail in over the color, and only when motion is allowed", () => {
+      renderCard(makeImage(1));
+      const img = screen.getByRole("img");
+
+      expect(img).toHaveClass("opacity-0", "motion-safe:transition-[opacity,transform]");
+      fireEvent.load(img);
+      expect(img).toHaveClass("opacity-100");
+    });
+  });
 });

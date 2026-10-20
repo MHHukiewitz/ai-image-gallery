@@ -30,11 +30,15 @@ export function ImageCard({ image, showMatch = false }: ImageCardProps) {
   // Keeps the first URL, and shows a placeholder while there is none (see the hook).
   const { src, showPlaceholder, onError } = useThumbnailSource(image.thumbnail_url);
   const [loaded, setLoaded] = useState(false);
+  // The tile's own background shows the picture's dominant color until the thumbnail has faded in
+  // over it, so a loading tile matches its picture instead of being flat gray.
+  const placeholderColor = image.analysis.colors[0];
 
   return (
     <button
       type="button"
       onClick={() => open(image.id)}
+      style={placeholderColor ? { backgroundColor: placeholderColor } : undefined}
       className={clsx(
         "group relative block aspect-square w-full overflow-hidden rounded-xl bg-zinc-200 text-left dark:bg-zinc-800",
         FOCUS_RING,
