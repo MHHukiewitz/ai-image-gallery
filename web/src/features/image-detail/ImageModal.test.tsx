@@ -333,6 +333,60 @@ describe("ImageModal", () => {
     expect(placeholder).toHaveClass("opacity-0");
   });
 
+  it("shows a placeholder, and loads nothing, when the original has no URL", async () => {
+    vi.mocked(getImage).mockResolvedValue(makeImage({}, { original_url: "" }));
+    renderGallery();
+    const user = userEvent.setup();
+    const dialog = await openModal(user);
+
+    expect(within(dialog).getByTestId("image-placeholder")).toBeInTheDocument();
+    expect(within(dialog).getByRole("img", { name: "Image unavailable" })).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("img", { name: "A golden sunset over a quiet beach." }),
+    ).not.toHaveAttribute("src");
+  });
+
+  it("shows no placeholder while the original is there", async () => {
+    renderGallery();
+    const user = userEvent.setup();
+    const dialog = await openModal(user);
+
+    expect(within(dialog).queryByTestId("image-placeholder")).not.toBeInTheDocument();
+  });
+
+  it("shows a placeholder when the original fails to load", async () => {
+    renderGallery();
+    const user = userEvent.setup();
+    const dialog = await openModal(user);
+    const picture = within(dialog).getByRole("img", {
+      name: "A golden sunset over a quiet beach.",
+    });
+
+    fireEvent.error(picture);
+
+    expect(within(dialog).getByTestId("image-placeholder")).toBeInTheDocument();
+  });
+
+  it("polls until the original has a URL, then drops the placeholder", async () => {
+    vi.mocked(getImage)
+      .mockResolvedValueOnce(makeImage({}, { original_url: "", thumbnail_url: "" }))
+      .mockResolvedValue(makeImage());
+    renderGallery();
+    const user = userEvent.setup();
+    const dialog = await openModal(user);
+    expect(within(dialog).getByTestId("image-placeholder")).toBeInTheDocument();
+
+    await waitFor(
+      () => expect(within(dialog).queryByTestId("image-placeholder")).not.toBeInTheDocument(),
+      { timeout: 3500 },
+    );
+
+    expect(getImage).toHaveBeenCalledTimes(2);
+    expect(
+      within(dialog).getByRole("img", { name: "A golden sunset over a quiet beach." }),
+    ).toHaveAttribute("src", "https://storage.test/original-7.jpg?token=first");
+  });
+
   it("asks before deleting, then closes the modal and says so", async () => {
     vi.mocked(deleteImage).mockResolvedValue(undefined);
     const { router } = renderGallery();
