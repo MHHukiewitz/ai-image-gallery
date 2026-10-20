@@ -11,6 +11,7 @@ from PIL import Image
 from PIL.ExifTags import Base
 
 from gallery.domain.errors import InvalidImageError
+from gallery.domain.filenames import MAX_FILENAME_LENGTH, display_filename
 from gallery.domain.validation import ImageInfo, inspect_image
 
 MAX_BYTES = 10 * 1024 * 1024
@@ -297,3 +298,64 @@ def test_the_pixel_limit_counts_the_stored_pixels_either_way_up() -> None:
 
     assert inspect(data, max_pixels=1200).width == 30
     assert rejection(data, max_pixels=1199).code == "too_many_pixels"
+
+
+# --- display_filename ---
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("beach.jpg", "beach.jpg"),
+        ("my holiday photo (1).PNG", "my holiday photo (1).PNG"),
+        ("Fotó café 夏.jpg", "Fotó café 夏.jpg"),
+        ("family 👨‍👩‍👧.png", "family 👨‍👩‍👧.png"),
+        ("../../etc/passwd", "passwd"),
+        ("/var/tmp/cat.png", "cat.png"),
+        ("C:\\Users\\Me\\Pictures\\cat.png", "cat.png"),
+        ("mixed/..\\sep/cat.png", "cat.png"),
+        ("  padded.png  ", "padded.png"),
+        ("tab\tand\nnewline.png", "tabandnewline.png"),
+        ("nul\x00byte.png", "nulbyte.png"),
+        ("escape\x1b[31m.png", "escape[31m.png"),
+        ("photo\u202egpj.exe", "photogpj.exe"),
+    ],
+)
+def test_display_filename_keeps_a_clean_basename(raw: str, expected: str) -> None:
+    assert display_filename(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw", [None, "", "   ", "/", "folder/", "..", ".", "a/..", "\x00\x01", "\n"]
+)
+def test_display_filename_falls_back_when_nothing_usable_is_left(raw: str | None) -> None:
+    assert display_filename(raw) == "image"
+
+
+def test_display_filename_drops_lone_surrogates() -> None:
+    # They can't be encoded as UTF-8, so they would fail the insert.
+    cleaned = display_filename("bad\ud800name.png")
+
+    assert cleaned == "badname.png"
+    cleaned.encode("utf-8")
+
+
+def test_display_filename_caps_the_length_and_keeps_the_extension() -> None:
+    name = display_filename("a" * 400 + ".jpeg")
+
+    assert len(name) == MAX_FILENAME_LENGTH
+    assert name == "a" * (MAX_FILENAME_LENGTH - len(".jpeg")) + ".jpeg"
+
+
+def test_display_filename_caps_a_long_name_without_an_extension() -> None:
+    assert display_filename("b" * 400) == "b" * MAX_FILENAME_LENGTH
+
+
+def test_display_filename_caps_a_long_name_with_a_very_long_extension() -> None:
+    assert len(display_filename("c." + "d" * 400)) == MAX_FILENAME_LENGTH
+
+
+def test_display_filename_leaves_a_name_of_exactly_the_limit_alone() -> None:
+    name = "e" * (MAX_FILENAME_LENGTH - 4) + ".png"
+
+    assert display_filename(name) == name
