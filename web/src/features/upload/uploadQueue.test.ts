@@ -58,21 +58,21 @@ describe("add", () => {
 });
 
 describe("concurrency", () => {
-  it("offers at most 3 of 6 queued files, oldest first", () => {
+  it("offers at most 2 of 6 queued files, oldest first", () => {
     const state = run([added(6)]);
 
-    expect(MAX_CONCURRENT_UPLOADS).toBe(3);
-    expect(ids(nextToStart(state))).toEqual(["f1", "f2", "f3"]);
+    expect(MAX_CONCURRENT_UPLOADS).toBe(2);
+    expect(ids(nextToStart(state))).toEqual(["f1", "f2"]);
   });
 
-  it("offers nothing once 3 are uploading, then one file per freed slot", () => {
+  it("offers nothing once 2 are uploading, then one file per freed slot", () => {
     let state = startAvailable(run([added(6)]));
-    expect(state.filter((item) => item.status === "uploading")).toHaveLength(3);
+    expect(state.filter((item) => item.status === "uploading")).toHaveLength(2);
     expect(nextToStart(state)).toEqual([]);
 
     state = run([{ type: "succeed", id: "f2" }], state);
 
-    expect(ids(nextToStart(state))).toEqual(["f4"]);
+    expect(ids(nextToStart(state))).toEqual(["f3"]);
   });
 
   it("frees a slot when an upload fails or is canceled", () => {
@@ -81,8 +81,8 @@ describe("concurrency", () => {
     const afterFail = run([{ type: "fail", id: "f1", error: "boom" }], state);
     const afterCancel = run([{ type: "cancel", id: "f1" }], state);
 
-    expect(ids(nextToStart(afterFail))).toEqual(["f4"]);
-    expect(ids(nextToStart(afterCancel))).toEqual(["f4"]);
+    expect(ids(nextToStart(afterFail))).toEqual(["f3"]);
+    expect(ids(nextToStart(afterCancel))).toEqual(["f3"]);
   });
 
   it("takes the limit as a parameter and never goes negative", () => {
@@ -191,20 +191,20 @@ describe("succeed and fail", () => {
 
 describe("cancel", () => {
   it("stops an upload in progress and frees its slot without ever restarting it", () => {
-    const uploading = startAvailable(run([added(4)]));
+    const uploading = startAvailable(run([added(3)]));
 
     const state = run([{ type: "cancel", id: "f1" }], uploading);
 
     expect(statusOf(state, "f1")).toBe("canceled");
-    expect(ids(nextToStart(state))).toEqual(["f4"]);
+    expect(ids(nextToStart(state))).toEqual(["f3"]);
   });
 
   it("never starts a queued item that was canceled", () => {
-    const state = run([added(5), { type: "cancel", id: "f4" }]);
+    const state = run([added(4), { type: "cancel", id: "f3" }]);
     const started = startAvailable(state);
 
-    expect(statusOf(started, "f4")).toBe("canceled");
-    expect(ids(nextToStart(run([{ type: "succeed", id: "f1" }], started)))).toEqual(["f5"]);
+    expect(statusOf(started, "f3")).toBe("canceled");
+    expect(ids(nextToStart(run([{ type: "succeed", id: "f1" }], started)))).toEqual(["f4"]);
   });
 
   it("leaves finished items alone", () => {
@@ -243,7 +243,7 @@ describe("retry", () => {
 
     const state = run([{ type: "retry", id: "f1" }], failed);
 
-    // f2 and f3 are still uploading, so only one slot is free and f1 is first in line for it.
+    // f2 is still uploading, so only one slot is free and f1 is first in line for it.
     expect(ids(nextToStart(state))).toEqual(["f1"]);
   });
 

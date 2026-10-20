@@ -1,5 +1,9 @@
-/** How many files go out at once. The browser allows more, but the API ingests synchronously. */
-export const MAX_CONCURRENT_UPLOADS = 3;
+/**
+ * How many files go out at once. The browser allows more, but the API ingests synchronously, and
+ * each upload makes Storage write two objects. More than this saturated the free tier's small
+ * Storage connection pool during bursts.
+ */
+export const MAX_CONCURRENT_UPLOADS = 2;
 
 export type UploadStatus = "queued" | "uploading" | "done" | "error" | "canceled";
 

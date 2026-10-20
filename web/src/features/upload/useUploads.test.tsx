@@ -81,7 +81,7 @@ afterEach(() => {
 });
 
 describe("useUploads", () => {
-  it("uploads 3 files at once and starts the next as each one finishes", async () => {
+  it("uploads 2 files at once and starts the next as each one finishes", async () => {
     const { result } = setup();
 
     act(() => result.current.addFiles(files(6)));
@@ -89,23 +89,19 @@ describe("useUploads", () => {
     expect(statuses(result.current.items)).toEqual([
       "uploading",
       "uploading",
-      "uploading",
+      "queued",
       "queued",
       "queued",
       "queued",
     ]);
-    expect(pending.map((upload) => upload.file.name)).toEqual([
-      "photo-1.png",
-      "photo-2.png",
-      "photo-3.png",
-    ]);
+    expect(pending.map((upload) => upload.file.name)).toEqual(["photo-1.png", "photo-2.png"]);
 
     await act(async () => pending[1].resolve(image(2, "photo-2.png")));
 
-    expect(pending).toHaveLength(4);
-    expect(pending[3].file.name).toBe("photo-4.png");
+    expect(pending).toHaveLength(3);
+    expect(pending[2].file.name).toBe("photo-3.png");
     expect(statuses(result.current.items).filter((status) => status === "uploading")).toHaveLength(
-      3,
+      2,
     );
   });
 
@@ -180,7 +176,7 @@ describe("useUploads", () => {
 
   it("aborts an upload in progress on cancel, quietly, and frees its slot", async () => {
     const { result } = setup();
-    act(() => result.current.addFiles(files(4)));
+    act(() => result.current.addFiles(files(3)));
     const [first] = result.current.items;
 
     await act(async () => result.current.cancel(first.id));
@@ -189,22 +185,18 @@ describe("useUploads", () => {
     expect(pending[1].options.signal?.aborted).toBe(false);
     expect(toast.error).not.toHaveBeenCalled();
     expect(result.current.items[0].status).toBe("canceled");
-    expect(pending[3].file.name).toBe("photo-4.png");
+    expect(pending[2].file.name).toBe("photo-3.png");
   });
 
   it("never uploads a queued file that was canceled", async () => {
     const { result } = setup();
-    act(() => result.current.addFiles(files(4)));
+    act(() => result.current.addFiles(files(3)));
 
-    act(() => result.current.cancel(result.current.items[3].id));
+    act(() => result.current.cancel(result.current.items[2].id));
     await act(async () => pending[0].resolve(image(1, "photo-1.png")));
 
-    expect(pending.map((upload) => upload.file.name)).toEqual([
-      "photo-1.png",
-      "photo-2.png",
-      "photo-3.png",
-    ]);
-    expect(result.current.items[3].status).toBe("canceled");
+    expect(pending.map((upload) => upload.file.name)).toEqual(["photo-1.png", "photo-2.png"]);
+    expect(result.current.items[2].status).toBe("canceled");
   });
 
   it("can retry a canceled upload", async () => {
