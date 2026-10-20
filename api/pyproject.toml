@@ -17,6 +17,7 @@ dependencies = [
     "openai==3.35.1",
     "sentry-sdk[fastapi]==2.72.0",
     "typesafe-sdk[pil]==0.7.5",
+    "fastembed==0.9.0",
 ]
 
 [dependency-groups]
@@ -26,6 +27,12 @@ dev = [
     "respx==0.23.1",
     "ruff==0.17.1",
 ]
+
+# fastembed 0.9.0 caps pillow below 13, but it only uses Pillow in its image-embedding classes.
+# The worker embeds text, so the app keeps the Pillow it was built and tested on. Drop this
+# override once fastembed lifts the cap.
+[tool.uv]
+override-dependencies = ["pillow==13.0.0"]
 
 [build-system]
 requires = ["hatchling==1.32.4"]
