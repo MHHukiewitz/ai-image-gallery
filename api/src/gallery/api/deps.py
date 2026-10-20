@@ -5,9 +5,9 @@ module never touches the secret key.
 """
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -17,7 +17,12 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from gallery import config
-from gallery.adapters.supabase_client import AsyncClient, close_client, user_client
+from gallery.adapters.supabase_client import (
+    AsyncClient,
+    close_client,
+    database_is_reachable,
+    user_client,
+)
 from gallery.adapters.supabase_images import SupabaseImageRepo
 from gallery.adapters.supabase_storage import SupabaseObjectStore
 from gallery.config import Settings
@@ -35,6 +40,9 @@ _CLOCK_SKEW_SECONDS = 10
 _JWKS_TIMEOUT_SECONDS = 5
 
 _bearer = HTTPBearer(auto_error=False)
+
+# Answers whether the database responds. It needs no user, only the publishable key.
+DatabaseCheck = Callable[[], Awaitable[bool]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,3 +143,7 @@ async def get_object_store(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ObjectStore:
     return SupabaseObjectStore(client, settings.STORAGE_BUCKET)
+
+
+def get_database_check(settings: Annotated[Settings, Depends(get_settings)]) -> DatabaseCheck:
+    return partial(database_is_reachable, settings)
