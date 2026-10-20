@@ -5,6 +5,7 @@ another user's image look the same here, and both raise NotFoundError.
 """
 
 import logging
+from collections.abc import Sequence
 
 from gallery.domain.errors import NotFoundError
 from gallery.domain.models import GalleryQuery, ImageRecord, Page, SimilarTo
@@ -25,7 +26,9 @@ class GalleryService:
         """Return one page and the signed thumbnail URLs for it, keyed by thumbnail path.
 
         All thumbnails are signed in one storage call, so a page costs one round trip however
-        many images it holds. A thumbnail that can't be signed is missing from the dict.
+        many images it holds. A thumbnail that can't be signed is missing from the dict. If
+        signing fails altogether, such as when Storage is overloaded, the dict is empty and the
+        page still comes back: the grid shows placeholders and asks again.
 
         A "similar to" search for an image the caller can't see raises NotFoundError. Without
         this check the search would return an empty page, which can't be told apart from an image
@@ -34,24 +37,37 @@ class GalleryService:
         if isinstance(query, SimilarTo) and await self._repo.get(query.image_id) is None:
             raise NotFoundError("Image not found.")
         page = await self._repo.list(query, limit=limit, offset=offset)
-        thumbnail_urls = await self._store.signed_urls(
-            [image.thumbnail_path for image in page.items], self._signed_url_ttl
-        )
+        thumbnail_urls = await self._sign([image.thumbnail_path for image in page.items])
         return page, thumbnail_urls
 
     async def get(self, image_id: int) -> tuple[ImageRecord, str, str]:
         """Return the image with its thumbnail and original URLs.
 
-        A URL the store can't sign comes back as an empty string. The storage adapter logs it,
-        and one broken file shouldn't hide the rest of the image's details.
+        A URL the store can't sign comes back as an empty string, and so do both when signing
+        fails altogether. The storage adapter logs a single broken file, and the image's other
+        details shouldn't be hidden by it.
         """
         record = await self._repo.get(image_id)
         if record is None:
             raise NotFoundError("Image not found.")
-        urls = await self._store.signed_urls(
-            [record.thumbnail_path, record.original_path], self._signed_url_ttl
-        )
+        urls = await self._sign([record.thumbnail_path, record.original_path])
         return record, urls.get(record.thumbnail_path, ""), urls.get(record.original_path, "")
+
+    async def _sign(self, paths: Sequence[str]) -> dict[str, str]:
+        """Sign `paths`, or return no URLs when the store fails.
+
+        The rows are already loaded, and the caller can ask again, so a Storage outage shouldn't
+        turn a readable gallery into a 500.
+        """
+        try:
+            return await self._store.signed_urls(paths, self._signed_url_ttl)
+        except Exception:
+            logger.warning(
+                "could not sign object urls, answering without them",
+                extra={"path_count": len(paths)},
+                exc_info=True,
+            )
+            return {}
 
     async def delete(self, image_id: int) -> None:
         """Remove the image's rows, then its stored objects.

@@ -215,6 +215,20 @@ def test_a_color_that_is_not_hex_is_a_422(client: TestClient, repo: AsyncMock) -
     repo.list.assert_not_awaited()
 
 
+def test_a_storage_failure_while_signing_leaves_the_list_readable(
+    client: TestClient, repo: AsyncMock, store: AsyncMock
+) -> None:
+    records = [make_record(2), make_record(1)]
+    repo.list.return_value = Page(items=records, next_offset=None)
+    store.signed_urls.side_effect = RuntimeError("storage is saturated")
+
+    response = client.get("/api/v1/images")
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [2, 1]
+    assert [item["thumbnail_url"] for item in response.json()["items"]] == ["", ""]
+
+
 # --- GET /api/v1/images/{id} ---------------------------------------------------------------
 
 
@@ -243,6 +257,20 @@ def test_the_detail_route_returns_the_thumbnail_and_original_urls(
         "error": None,
     }
     repo.get.assert_awaited_once_with(5)
+
+
+def test_a_storage_failure_while_signing_leaves_the_detail_readable(
+    client: TestClient, repo: AsyncMock, store: AsyncMock
+) -> None:
+    repo.get.return_value = make_record(5)
+    store.signed_urls.side_effect = RuntimeError("storage is saturated")
+
+    response = client.get("/api/v1/images/5")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == 5
+    assert (body["thumbnail_url"], body["original_url"]) == ("", "")
 
 
 def test_a_missing_image_is_a_404_in_the_error_shape(client: TestClient, repo: AsyncMock) -> None:

@@ -87,9 +87,12 @@ class FakeObjectStore:
         self.objects = set(paths)
         self.signed_calls: list[tuple[list[str], int]] = []
         self.delete_error: Exception | None = None
+        self.signing_error: Exception | None = None
 
     async def signed_urls(self, paths: Sequence[str], ttl_seconds: int) -> dict[str, str]:
         self.signed_calls.append((list(paths), ttl_seconds))
+        if self.signing_error is not None:
+            raise self.signing_error
         return {path: signed(path) for path in paths if path in self.objects}
 
     async def delete(self, paths: Sequence[str]) -> None:
@@ -148,6 +151,24 @@ async def test_list_leaves_out_a_thumbnail_the_store_cannot_sign() -> None:
     assert set(thumbnail_urls) == {records[0].thumbnail_path}
 
 
+async def test_list_degrades_to_no_urls_when_signing_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    records = [make_record(1), make_record(2)]
+    store = store_holding(*records)
+    store.signing_error = RuntimeError("storage is saturated")
+    service = GalleryService(FakeImageRepo(*records), store, signed_url_ttl=SIGNED_URL_TTL)
+
+    with caplog.at_level(logging.WARNING):
+        page, thumbnail_urls = await service.list(AllImages(), limit=20, offset=0)
+
+    assert [record.id for record in page.items] == [2, 1]
+    assert thumbnail_urls == {}
+    [warning] = [entry for entry in caplog.records if entry.name == "gallery.services.gallery"]
+    assert warning.levelno == logging.WARNING
+    assert warning.path_count == 2
+
+
 async def test_a_search_mode_fails_before_anything_is_signed() -> None:
     record = make_record(1)
     store = store_holding(record)
@@ -191,6 +212,23 @@ async def test_get_gives_an_empty_url_for_an_object_it_cannot_sign() -> None:
 
     assert thumbnail_url == signed(record.thumbnail_path)
     assert original_url == ""
+
+
+async def test_get_degrades_to_empty_urls_when_signing_fails(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    record = make_record(1)
+    store = store_holding(record)
+    store.signing_error = RuntimeError("storage is saturated")
+    service = GalleryService(FakeImageRepo(record), store, signed_url_ttl=SIGNED_URL_TTL)
+
+    with caplog.at_level(logging.WARNING):
+        found, thumbnail_url, original_url = await service.get(1)
+
+    assert found == record
+    assert (thumbnail_url, original_url) == ("", "")
+    [warning] = [entry for entry in caplog.records if entry.name == "gallery.services.gallery"]
+    assert warning.levelno == logging.WARNING
 
 
 # --- delete --------------------------------------------------------------------------------
