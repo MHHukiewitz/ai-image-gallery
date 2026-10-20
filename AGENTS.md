@@ -83,4 +83,26 @@ These rules apply to every ticket. If your issue contradicts them, follow the is
 
 ## Commands
 
-_Ticket #1 fills this section in: dev servers, tests, lint, formatting, type generation and DB tests._
+Run these from the repo root. `make help` lists the targets.
+
+| Task | Command |
+|---|---|
+| Install API deps | `cd api && uv sync` (uv downloads Python 3.12 itself) |
+| Install web deps | `cd web && npm ci` |
+| Local Supabase (needs Docker) | `make dev-db`. It prints the URL and keys for your `.env`. |
+| API dev server (`:8000`, auto-reload) | `make dev-api`, then open `http://localhost:8000/api/docs` |
+| Worker | `make dev-worker` (for example `ANALYZER=fake make dev-worker`) |
+| Web dev server (`:5173`, proxies `/api` to `:8000`) | `make dev-web`, or `VITE_USE_MOCKS=true make dev-web` with no backend |
+| Unit tests, API and web | `make test` |
+| API tests only | `cd api && uv run pytest` |
+| API integration tests (need `make dev-db`) | `cd api && uv run pytest -m integration` |
+| Web tests only | `cd web && npm run test -- --run` |
+| Lint, type-check and format-check | `make lint` |
+| Auto-format | `make fmt` |
+| Regenerate `web/src/lib/api-types.ts` | `make types` (after editing `schemas.py`; needs `scripts/gen-api-types.sh` from #2) |
+| Database (pgTAP) tests | `make db-test` (needs `make dev-db` running) |
+
+- **Environment:** copy `.env.example` to `.env` at the repo root. The API and worker read it, and `api/.env` overrides it.
+- **Supabase CLI:** nothing to install. `make` runs it as `npx --yes supabase@<pinned version>`. To use your own, run `make SUPABASE=supabase <target>`.
+- **Python deps:** add them to `api/pyproject.toml` pinned with `==`, then run `uv lock`. Commit `uv.lock`.
+- **Web deps:** `web/.npmrc` sets `save-exact`, so `npm install <pkg>` pins exactly. Never add `^` or `~`.
