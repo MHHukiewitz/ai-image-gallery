@@ -50,6 +50,14 @@ x-backend-env: &backend-env
   SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-}
   # The deploy script exports the git SHA. The same value tags the web bundle below.
   RELEASE: ${RELEASE:-}
+  # Database request timeout for both services. Idempotent calls retry on top of it (#76).
+  SUPABASE_HTTP_TIMEOUT_SECONDS: ${SUPABASE_HTTP_TIMEOUT_SECONDS:-}
+  # none (the setting's default) or fastembed. The worker embeds images for "find similar" (#63)
+  # and the API embeds text queries for semantic search (#75). The model is baked into the image
+  # at /opt/models, so only a different model needs EMBEDDING_MODEL, and then a rebuild.
+  EMBEDDER: ${EMBEDDER:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  EMBEDDING_CACHE_DIR: ${EMBEDDING_CACHE_DIR:-}
 
 services:
   api:
@@ -112,11 +120,6 @@ services:
       # Only read when ANALYZER=openai_compat.
       AI_BASE_URL: ${AI_BASE_URL:-}
       AI_API_KEY: ${AI_API_KEY:-}
-      # none (the setting's default) or fastembed. The model is baked into the image at
-      # /opt/models, so only a different model needs EMBEDDING_MODEL, and then a rebuild.
-      EMBEDDER: ${EMBEDDER:-}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
-      EMBEDDING_CACHE_DIR: ${EMBEDDING_CACHE_DIR:-}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-}
       WORKER_POLL_MIN_SECONDS: ${WORKER_POLL_MIN_SECONDS:-}
       WORKER_POLL_MAX_SECONDS: ${WORKER_POLL_MAX_SECONDS:-}
