@@ -6,7 +6,7 @@ The real `storage3` client runs, so its error parsing is part of what these test
 import json
 import logging
 import threading
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from io import BytesIO
 from uuid import UUID
 
@@ -574,6 +574,9 @@ def test_threads_can_share_the_cache() -> None:
 
 class UnreachableImageRepo:
     """An ImageRepo that must not be reached: the upload dies before the insert."""
+
+    async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
+        return {}
 
     async def insert(self, image: NewImage) -> ImageRecord:
         raise AssertionError("the thumbnail failed, so nothing should be inserted")
