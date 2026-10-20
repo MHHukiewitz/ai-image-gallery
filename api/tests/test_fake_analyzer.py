@@ -133,8 +133,3 @@ def test_factory_builds_the_fake_analyzer() -> None:
 
 def test_factory_defaults_to_the_fake_analyzer(settings: Settings) -> None:
     assert isinstance(build_analyzer(settings), FakeAnalyzer)
-
-
-def test_factory_leaves_the_anthropic_adapter_to_ticket_31() -> None:
-    with pytest.raises(NotImplementedError, match="#31"):
-        build_analyzer(Settings(ANALYZER="anthropic", ANTHROPIC_API_KEY="test-key"))
