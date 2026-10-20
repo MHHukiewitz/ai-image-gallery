@@ -3,9 +3,10 @@
  * each upload makes Storage write two objects. More than this saturated the free tier's small
  * Storage connection pool during bursts.
  */
-export const MAX_CONCURRENT_UPLOADS = 2;
+export const DEFAULT_UPLOAD_CONCURRENCY = 2;
 
-export type UploadStatus = "queued" | "uploading" | "done" | "error" | "canceled";
+export type UploadStatus =
+  "checking" | "queued" | "uploading" | "done" | "duplicate" | "error" | "canceled";
 
 export interface UploadItem {
   id: string;
@@ -15,12 +16,26 @@ export interface UploadItem {
   status: UploadStatus;
   /** The message to show, set while `status` is "error". */
   error?: string;
+  /** The image the user already has, set while `status` is "duplicate". */
+  imageId?: number;
 }
 
 export type UploadQueueState = readonly UploadItem[];
 
 export type UploadAction =
-  | { type: "add"; items: readonly { id: string; file: File }[] }
+  // "checking" holds a file back while the drop is hashed and looked up; "queued" (the default)
+  // makes it ready to upload.
+  | {
+      type: "add";
+      items: readonly { id: string; file: File }[];
+      status?: "checking" | "queued";
+    }
+  // The file is new to the user: let it upload.
+  | { type: "ready"; id: string }
+  // The user already has this image (found by lookup, or the server answered 200).
+  | { type: "duplicate"; id: string; imageId: number }
+  // Drops files that are identical to another file in the same drop, before anything is sent.
+  | { type: "collapse"; ids: readonly string[] }
   | { type: "start"; id: string }
   | { type: "progress"; id: string; percent: number }
   | { type: "succeed"; id: string }
@@ -31,7 +46,7 @@ export type UploadAction =
 
 export const initialUploadQueue: UploadQueueState = [];
 
-const FINISHED: readonly UploadStatus[] = ["done", "error", "canceled"];
+const FINISHED: readonly UploadStatus[] = ["done", "duplicate", "error", "canceled"];
 
 function clampPercent(percent: number): number {
   if (Number.isNaN(percent)) return 0;
@@ -62,10 +77,26 @@ export function uploadQueueReducer(
   switch (action.type) {
     case "add": {
       const known = new Set(state.map((item) => item.id));
+      const status = action.status ?? "queued";
       const added = action.items
         .filter(({ id }) => !known.has(id))
-        .map(({ id, file }): UploadItem => ({ id, file, progress: 0, status: "queued" }));
+        .map(({ id, file }): UploadItem => ({ id, file, progress: 0, status }));
       return added.length === 0 ? state : [...state, ...added];
+    }
+    case "ready":
+      return transition(state, action.id, ["checking"], (item) => ({ ...item, status: "queued" }));
+    case "duplicate":
+      return transition(state, action.id, ["checking", "uploading"], (item) => ({
+        ...item,
+        status: "duplicate",
+        progress: 100,
+        error: undefined,
+        imageId: action.imageId,
+      }));
+    case "collapse": {
+      const ids = new Set(action.ids);
+      const remaining = state.filter((item) => !(ids.has(item.id) && item.status === "checking"));
+      return remaining.length === state.length ? state : remaining;
     }
     case "start":
       return transition(state, action.id, ["queued"], (item) => ({
@@ -92,7 +123,7 @@ export function uploadQueueReducer(
         error: action.error,
       }));
     case "cancel":
-      return transition(state, action.id, ["queued", "uploading"], (item) => ({
+      return transition(state, action.id, ["checking", "queued", "uploading"], (item) => ({
         ...item,
         status: "canceled",
       }));
@@ -102,6 +133,7 @@ export function uploadQueueReducer(
         status: "queued",
         progress: 0,
         error: undefined,
+        imageId: undefined,
       }));
     case "dismiss": {
       // Only finished items go away; an active one has to be canceled first so it gets aborted.
@@ -115,7 +147,7 @@ export function uploadQueueReducer(
 /** The queued items to start now, oldest first, so that at most `concurrency` are uploading. */
 export function nextToStart(
   state: UploadQueueState,
-  concurrency: number = MAX_CONCURRENT_UPLOADS,
+  concurrency: number = DEFAULT_UPLOAD_CONCURRENCY,
 ): UploadItem[] {
   const running = state.filter((item) => item.status === "uploading").length;
   const free = Math.max(0, concurrency - running);
@@ -130,11 +162,17 @@ export function summarizeQueue(state: UploadQueueState): string {
   const count = (status: UploadStatus) => state.filter((item) => item.status === status).length;
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
+  const checking = count("checking");
   const active = count("uploading") + count("queued");
   const failed = count("error");
   const parts: string[] = [];
+  if (checking > 0) parts.push(`Checking ${plural(checking, "image")}`);
   if (active > 0) parts.push(`Uploading ${plural(active, "image")}`);
   if (failed > 0) parts.push(`${plural(failed, "upload")} failed`);
   if (parts.length > 0) return parts.join(", ");
-  return count("done") > 0 ? "Upload complete" : "";
+
+  const duplicates = count("duplicate");
+  if (count("done") > 0) parts.push("Upload complete");
+  if (duplicates > 0) parts.push(`${duplicates} already in your gallery, moved to top`);
+  return parts.join(", ");
 }

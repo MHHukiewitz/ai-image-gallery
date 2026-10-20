@@ -9,24 +9,35 @@ interface UploadQueueProps {
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
   onDismiss: (id: string) => void;
+  /** Opens the image the user already had, by id. */
+  onView: (imageId: number) => void;
 }
 
+const DUPLICATE_MESSAGE = "Already in your gallery, moved to top";
+
 const BAR_COLORS: Record<UploadStatus, string> = {
+  checking: "bg-zinc-300 dark:bg-zinc-600",
   queued: "bg-zinc-300 dark:bg-zinc-600",
   uploading: "bg-zinc-900 dark:bg-zinc-100",
   done: "bg-emerald-600 dark:bg-emerald-400",
+  duplicate: "bg-sky-600 dark:bg-sky-400",
   error: "bg-red-600 dark:bg-red-400",
   canceled: "bg-zinc-300 dark:bg-zinc-600",
 };
 
+/** The short label beside the file name. A duplicate's sentence is too long for it, so it goes below. */
 function statusLabel(item: UploadItem): string {
   switch (item.status) {
+    case "checking":
+      return "Checking";
     case "queued":
       return "Waiting";
     case "uploading":
       return `Uploading ${item.progress}%`;
     case "done":
       return "Uploaded";
+    case "duplicate":
+      return "";
     case "error":
       return "Failed";
     case "canceled":
@@ -39,9 +50,10 @@ function UploadRow({
   onCancel,
   onRetry,
   onDismiss,
+  onView,
 }: { item: UploadItem } & Omit<UploadQueueProps, "items">) {
-  const { id, file, progress, status, error } = item;
-  const active = status === "queued" || status === "uploading";
+  const { id, file, progress, status, error, imageId } = item;
+  const active = status === "checking" || status === "queued" || status === "uploading";
   const retryable = status === "error" || status === "canceled";
 
   return (
@@ -82,8 +94,21 @@ function UploadRow({
           />
         </div>
         {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+        {status === "duplicate" && (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">{DUPLICATE_MESSAGE}</p>
+        )}
       </div>
       <div className="flex shrink-0 gap-1">
+        {status === "duplicate" && imageId !== undefined && (
+          <Button
+            variant="secondary"
+            size="sm"
+            aria-label={`View ${file.name} in your gallery`}
+            onClick={() => onView(imageId)}
+          >
+            View
+          </Button>
+        )}
         {active && (
           <Button
             variant="ghost"
@@ -124,7 +149,7 @@ function UploadRow({
  * summary line is the live region: it changes when a file starts, finishes or fails, so a
  * screen reader hears the progress without a message for every percent.
  */
-export function UploadQueue({ items, onCancel, onRetry, onDismiss }: UploadQueueProps) {
+export function UploadQueue({ items, onCancel, onRetry, onDismiss, onView }: UploadQueueProps) {
   return (
     <div role="group" aria-label="Uploads" className={clsx(items.length > 0 && "space-y-2")}>
       <p
@@ -143,6 +168,7 @@ export function UploadQueue({ items, onCancel, onRetry, onDismiss }: UploadQueue
               onCancel={onCancel}
               onRetry={onRetry}
               onDismiss={onDismiss}
+              onView={onView}
             />
           ))}
         </ul>

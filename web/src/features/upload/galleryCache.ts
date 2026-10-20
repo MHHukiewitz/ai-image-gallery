@@ -37,6 +37,22 @@ export function prependToGallery(queryClient: QueryClient, image: ImageOut): voi
   });
 }
 
+/**
+ * Moves an image the user already had to the top of the unfiltered grid, using the fresh copy the
+ * API returned. Unlike `prependToGallery` it takes the image out of wherever it was listed, which
+ * may be a page further down. Does nothing when that list isn't cached.
+ */
+export function moveToTopOfGallery(queryClient: QueryClient, image: ImageOut): void {
+  queryClient.setQueryData<unknown>(ALL_IMAGES_KEY, (current: unknown) => {
+    if (!isGalleryPages(current)) return current;
+    const pages = current.pages.map((page, index) => {
+      const items = page.items.filter(({ id }) => id !== image.id);
+      return { ...page, items: index === 0 ? [image, ...items] : items };
+    });
+    return { ...current, pages };
+  });
+}
+
 /** True once the unfiltered grid has loaded and has nothing in it: the first-upload state. */
 export function isGalleryEmpty(queryClient: QueryClient): boolean {
   const data = queryClient.getQueryData<unknown>(ALL_IMAGES_KEY);

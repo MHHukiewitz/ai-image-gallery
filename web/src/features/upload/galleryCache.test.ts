@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ImageOut, ImagePage } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
-import { isGalleryEmpty, prependToGallery } from "./galleryCache";
+import { isGalleryEmpty, moveToTopOfGallery, prependToGallery } from "./galleryCache";
 
 function image(id: number): ImageOut {
   return {
@@ -118,5 +118,81 @@ describe("isGalleryEmpty", () => {
     client.setQueryData(queryKeys.images.list({ kind: "text", q: "nothing" }), pages([]));
 
     expect(isGalleryEmpty(client)).toBe(false);
+  });
+});
+
+describe("moveToTopOfGallery", () => {
+  const cached = (client: QueryClient) =>
+    client
+      .getQueryData<InfiniteData<ImagePage, number>>(ALL)
+      ?.pages.map((page) => page.items.map(({ id }) => id));
+
+  it("moves an image from further down the first page to the top", () => {
+    const client = new QueryClient();
+    client.setQueryData(ALL, pages([4, 3, 2, 1]));
+
+    moveToTopOfGallery(client, image(2));
+
+    expect(cached(client)).toEqual([[2, 4, 3, 1]]);
+  });
+
+  it("takes an image off a later page and puts it first on the first page", () => {
+    const client = new QueryClient();
+    client.setQueryData(ALL, pages([4, 3], [2, 1]));
+
+    moveToTopOfGallery(client, image(1));
+
+    expect(cached(client)).toEqual([[1, 4, 3], [2]]);
+  });
+
+  it("adds an image that no loaded page has yet", () => {
+    const client = new QueryClient();
+    client.setQueryData(ALL, pages([4, 3], [2]));
+
+    moveToTopOfGallery(client, image(99));
+
+    expect(cached(client)).toEqual([[99, 4, 3], [2]]);
+  });
+
+  it("shows the fresh copy the API returned, with its new thumbnail URL", () => {
+    const client = new QueryClient();
+    client.setQueryData(ALL, pages([2, 1]));
+    const fresh = { ...image(1), thumbnail_url: "https://example.test/fresh.webp" };
+
+    moveToTopOfGallery(client, fresh);
+
+    const first = client.getQueryData<InfiniteData<ImagePage, number>>(ALL)?.pages[0].items[0];
+    expect(first?.thumbnail_url).toBe("https://example.test/fresh.webp");
+  });
+
+  it("keeps the page parameters and cursors", () => {
+    const client = new QueryClient();
+    client.setQueryData(ALL, pages([4, 3], [2, 1]));
+
+    moveToTopOfGallery(client, image(1));
+
+    const data = client.getQueryData<InfiniteData<ImagePage, number>>(ALL);
+    expect(data?.pageParams).toEqual([0, 20]);
+    expect(data?.pages.map((page) => page.next_offset)).toEqual([20, null]);
+  });
+
+  it("does nothing when the unfiltered list isn't cached", () => {
+    const client = new QueryClient();
+
+    moveToTopOfGallery(client, image(1));
+
+    expect(client.getQueryData(ALL)).toBeUndefined();
+  });
+
+  it("leaves a search view's cache alone", () => {
+    const client = new QueryClient();
+    const search = queryKeys.images.list({ kind: "text", q: "beach" });
+    client.setQueryData(search, pages([5, 1]));
+
+    moveToTopOfGallery(client, image(1));
+
+    expect(client.getQueryData<InfiniteData<ImagePage, number>>(search)?.pages[0].items[0].id).toBe(
+      5,
+    );
   });
 });

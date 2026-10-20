@@ -31,3 +31,24 @@ export function rejectionMessage(
   }
   return `${file.name} couldn't be added: ${errors[0]?.message ?? "unknown problem"}.`;
 }
+
+/**
+ * The toast after a drop in which some files were already in the gallery or repeated within the
+ * drop, or null when neither happened. `bumped` files were moved to the top instead of uploaded;
+ * `skipped` files were identical to another file in the drop and were not sent twice.
+ */
+export function duplicateSummary({
+  bumped,
+  skipped,
+}: {
+  bumped: number;
+  skipped: number;
+}): string | null {
+  const parts: string[] = [];
+  if (bumped > 0) parts.push(`${bumped} already in your gallery, moved to top`);
+  if (skipped > 0) {
+    const [noun, verb] = skipped === 1 ? ["file", "was"] : ["files", "were"];
+    parts.push(`${skipped} identical ${noun} in this drop ${verb} skipped`);
+  }
+  return parts.length > 0 ? parts.join("; ") : null;
+}

@@ -5,6 +5,7 @@ import type { FileRejection } from "react-dropzone";
 
 import { Button } from "../../components/ui/Button";
 import { toast } from "../../components/ui/toast";
+import { useSelectedImage } from "../../lib/galleryQuery";
 // The extension is not optional: on a case-insensitive filesystem "./UploadQueue" would resolve
 // to uploadQueue.ts, the reducer, since TypeScript tries .ts before .tsx.
 import { UploadQueue } from "./UploadQueue.tsx";
@@ -83,6 +84,7 @@ function PageDropTarget({ visible, onDrop }: { visible: boolean; onDrop: DropHan
 export function UploadZone() {
   const { items, addFiles, cancel, retry, dismiss } = useUploads();
   const galleryIsEmpty = useGalleryIsEmpty();
+  const { open: openImage } = useSelectedImage();
 
   const handleDrop = useCallback<DropHandler>(
     (accepted, rejections) => {
@@ -137,7 +139,13 @@ export function UploadZone() {
         )}
       </div>
       <PageDropTarget visible={isDragGlobal} onDrop={handleDrop} />
-      <UploadQueue items={items} onCancel={cancel} onRetry={retry} onDismiss={dismiss} />
+      <UploadQueue
+        items={items}
+        onCancel={cancel}
+        onRetry={retry}
+        onDismiss={dismiss}
+        onView={openImage}
+      />
     </div>
   );
 }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_UPLOAD_CONCURRENCY,
   initialUploadQueue,
-  MAX_CONCURRENT_UPLOADS,
   nextToStart,
   summarizeQueue,
   uploadQueueReducer,
@@ -25,6 +25,13 @@ function added(count: number): UploadAction {
       file: file(`photo-${index + 1}.png`),
     })),
   };
+}
+
+/** A drop whose files are still being hashed and looked up, like the hook adds them. */
+function checkingAdded(count: number): UploadAction {
+  const action = added(count);
+  if (action.type !== "add") throw new Error("added() builds an add action");
+  return { ...action, status: "checking" };
 }
 
 /** Starts everything `nextToStart` offers, like the hook's effect does. */
@@ -61,7 +68,7 @@ describe("concurrency", () => {
   it("offers at most 2 of 6 queued files, oldest first", () => {
     const state = run([added(6)]);
 
-    expect(MAX_CONCURRENT_UPLOADS).toBe(2);
+    expect(DEFAULT_UPLOAD_CONCURRENCY).toBe(2);
     expect(ids(nextToStart(state))).toEqual(["f1", "f2"]);
   });
 
@@ -259,11 +266,15 @@ describe("retry", () => {
 });
 
 describe("dismiss", () => {
-  it.each(["done", "error", "canceled"] as const)("removes a %s item", (finish) => {
+  it.each(["done", "duplicate", "error", "canceled"] as const)("removes a %s item", (finish) => {
     const actions: Record<typeof finish, UploadAction[]> = {
       done: [
         { type: "start", id: "f1" },
         { type: "succeed", id: "f1" },
+      ],
+      duplicate: [
+        { type: "start", id: "f1" },
+        { type: "duplicate", id: "f1", imageId: 9 },
       ],
       error: [
         { type: "start", id: "f1" },
@@ -277,10 +288,12 @@ describe("dismiss", () => {
     expect(state.map((item) => item.id)).toEqual(["f2"]);
   });
 
-  it("keeps a queued or uploading item, so it can't escape its abort", () => {
+  it("keeps a checking, queued or uploading item, so it can't escape its abort", () => {
+    const checking = run([checkingAdded(1)]);
     const queued = run([added(1)]);
     const uploading = run([{ type: "start", id: "f1" }], queued);
 
+    expect(run([{ type: "dismiss", id: "f1" }], checking)).toBe(checking);
     expect(run([{ type: "dismiss", id: "f1" }], queued)).toBe(queued);
     expect(run([{ type: "dismiss", id: "f1" }], uploading)).toBe(uploading);
   });
@@ -318,5 +331,183 @@ describe("summarizeQueue", () => {
     const state = run([added(1), { type: "start", id: "f1" }, { type: "succeed", id: "f1" }]);
 
     expect(summarizeQueue(state)).toBe("Upload complete");
+  });
+});
+
+describe("checking", () => {
+  it("adds files as checking, with no progress, when asked to", () => {
+    const state = run([checkingAdded(2)]);
+
+    expect(state.map(({ id, status, progress }) => ({ id, status, progress }))).toEqual([
+      { id: "f1", status: "checking", progress: 0 },
+      { id: "f2", status: "checking", progress: 0 },
+    ]);
+  });
+
+  it("does not offer a checking file for upload", () => {
+    const state = run([checkingAdded(3)]);
+
+    expect(nextToStart(state)).toEqual([]);
+  });
+
+  it("does not count a checking file against the upload slots", () => {
+    const state = run([checkingAdded(2), added(0)]);
+    const withUploads = run(
+      [
+        {
+          type: "add",
+          items: [
+            { id: "u1", file: file("u1.png") },
+            { id: "u2", file: file("u2.png") },
+            { id: "u3", file: file("u3.png") },
+          ],
+        },
+      ],
+      state,
+    );
+
+    expect(ids(nextToStart(withUploads))).toEqual(["u1", "u2"]);
+  });
+
+  it("releases a file to the queue with ready", () => {
+    const state = run([checkingAdded(2), { type: "ready", id: "f2" }]);
+
+    expect(statusOf(state, "f1")).toBe("checking");
+    expect(statusOf(state, "f2")).toBe("queued");
+    expect(ids(nextToStart(state))).toEqual(["f2"]);
+  });
+
+  it("ignores ready for a file that was canceled while it waited", () => {
+    const canceled = run([checkingAdded(1), { type: "cancel", id: "f1" }]);
+
+    expect(statusOf(canceled, "f1")).toBe("canceled");
+    expect(run([{ type: "ready", id: "f1" }], canceled)).toBe(canceled);
+  });
+
+  it("ignores ready for a file that is already uploading or unknown", () => {
+    const uploading = run([added(1), { type: "start", id: "f1" }]);
+
+    expect(run([{ type: "ready", id: "f1" }], uploading)).toBe(uploading);
+    expect(run([{ type: "ready", id: "nope" }], uploading)).toBe(uploading);
+  });
+
+  it("can be canceled, and then retried like any canceled file", () => {
+    const state = run([
+      checkingAdded(1),
+      { type: "cancel", id: "f1" },
+      { type: "retry", id: "f1" },
+    ]);
+
+    expect(statusOf(state, "f1")).toBe("queued");
+  });
+});
+
+describe("collapse", () => {
+  it("removes the checking files it names and keeps the rest in order", () => {
+    const state = run([checkingAdded(4), { type: "collapse", ids: ["f2", "f4"] }]);
+
+    expect(ids([...state])).toEqual(["f1", "f3"]);
+  });
+
+  it("never removes a file that has moved on", () => {
+    const state = run([
+      checkingAdded(2),
+      { type: "ready", id: "f1" },
+      { type: "start", id: "f1" },
+      { type: "collapse", ids: ["f1", "f2"] },
+    ]);
+
+    expect(ids([...state])).toEqual(["f1"]);
+  });
+
+  it("returns the same state when it removes nothing", () => {
+    const state = run([checkingAdded(1)]);
+
+    expect(run([{ type: "collapse", ids: ["nope"] }], state)).toBe(state);
+    expect(run([{ type: "collapse", ids: [] }], state)).toBe(state);
+  });
+});
+
+describe("duplicate", () => {
+  it("marks a checking file as already in the gallery, and remembers which image", () => {
+    const state = run([checkingAdded(1), { type: "duplicate", id: "f1", imageId: 42 }]);
+
+    expect(state[0]).toMatchObject({ status: "duplicate", progress: 100, imageId: 42 });
+  });
+
+  it("marks an uploading file the server answered 200 for, and frees its slot", () => {
+    const uploading = startAvailable(run([added(3)]));
+
+    const state = run([{ type: "duplicate", id: "f1", imageId: 7 }], uploading);
+
+    expect(state[0]).toMatchObject({ status: "duplicate", imageId: 7 });
+    expect(ids(nextToStart(state))).toEqual(["f3"]);
+  });
+
+  it("is a no-op for a file that was canceled, finished or is unknown", () => {
+    const canceled = run([checkingAdded(1), { type: "cancel", id: "f1" }]);
+    const done = run([added(1), { type: "start", id: "f1" }, { type: "succeed", id: "f1" }]);
+
+    expect(run([{ type: "duplicate", id: "f1", imageId: 1 }], canceled)).toBe(canceled);
+    expect(run([{ type: "duplicate", id: "f1", imageId: 1 }], done)).toBe(done);
+    expect(run([{ type: "duplicate", id: "nope", imageId: 1 }], done)).toBe(done);
+  });
+
+  it("cannot be canceled or started again", () => {
+    const state = run([checkingAdded(1), { type: "duplicate", id: "f1", imageId: 1 }]);
+
+    expect(run([{ type: "cancel", id: "f1" }], state)).toBe(state);
+    expect(run([{ type: "start", id: "f1" }], state)).toBe(state);
+  });
+
+  it("is not retried: the image is already in the gallery", () => {
+    const state = run([checkingAdded(1), { type: "duplicate", id: "f1", imageId: 5 }]);
+
+    expect(run([{ type: "retry", id: "f1" }], state)).toBe(state);
+  });
+});
+
+describe("summarizeQueue with duplicates", () => {
+  it("counts files being checked", () => {
+    expect(summarizeQueue(run([checkingAdded(3)]))).toBe("Checking 3 images");
+    expect(summarizeQueue(run([checkingAdded(1)]))).toBe("Checking 1 image");
+  });
+
+  it("lists checking and uploading files together", () => {
+    const state = run([
+      checkingAdded(1),
+      {
+        type: "add",
+        items: [{ id: "u1", file: file("u1.png") }],
+      },
+    ]);
+
+    expect(summarizeQueue(state)).toBe("Checking 1 image, Uploading 1 image");
+  });
+
+  it("announces duplicates once nothing is left to do", () => {
+    const state = run([checkingAdded(3)]);
+    const bumped = run(
+      [
+        { type: "duplicate", id: "f1", imageId: 1 },
+        { type: "duplicate", id: "f2", imageId: 2 },
+        { type: "duplicate", id: "f3", imageId: 3 },
+      ],
+      state,
+    );
+
+    expect(summarizeQueue(bumped)).toBe("3 already in your gallery, moved to top");
+  });
+
+  it("announces uploads and duplicates together", () => {
+    const state = run([
+      checkingAdded(2),
+      { type: "duplicate", id: "f1", imageId: 1 },
+      { type: "ready", id: "f2" },
+      { type: "start", id: "f2" },
+      { type: "succeed", id: "f2" },
+    ]);
+
+    expect(summarizeQueue(state)).toBe("Upload complete, 1 already in your gallery, moved to top");
   });
 });

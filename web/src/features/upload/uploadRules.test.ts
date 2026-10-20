@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseMaxUploadMb, rejectionMessage } from "./uploadRules";
+import { duplicateSummary, parseMaxUploadMb, rejectionMessage } from "./uploadRules";
 
 function rejection(name: string, ...codes: string[]) {
   return {
@@ -43,5 +43,35 @@ describe("rejectionMessage", () => {
     expect(rejectionMessage(rejection("a.png", "too-many-files"))).toBe(
       "a.png couldn't be added: message for too-many-files.",
     );
+  });
+});
+
+describe("duplicateSummary", () => {
+  it("says how many files were already in the gallery and moved to the top", () => {
+    expect(duplicateSummary({ bumped: 3, skipped: 0 })).toBe(
+      "3 already in your gallery, moved to top",
+    );
+    expect(duplicateSummary({ bumped: 1, skipped: 0 })).toBe(
+      "1 already in your gallery, moved to top",
+    );
+  });
+
+  it("says how many repeats within the drop were skipped", () => {
+    expect(duplicateSummary({ bumped: 0, skipped: 1 })).toBe(
+      "1 identical file in this drop was skipped",
+    );
+    expect(duplicateSummary({ bumped: 0, skipped: 2 })).toBe(
+      "2 identical files in this drop were skipped",
+    );
+  });
+
+  it("reports both in one sentence", () => {
+    expect(duplicateSummary({ bumped: 2, skipped: 1 })).toBe(
+      "2 already in your gallery, moved to top; 1 identical file in this drop was skipped",
+    );
+  });
+
+  it("is null when there was nothing to report", () => {
+    expect(duplicateSummary({ bumped: 0, skipped: 0 })).toBeNull();
   });
 });
