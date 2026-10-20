@@ -58,6 +58,31 @@ class LookupResponse(BaseModel):
     )
 
 
+# One bump per chunk of a drop; the web client sends at most this many at a time.
+MAX_BUMP_IMAGES = 50
+
+# Postgres bigint, which image ids are. A larger number would be a database error, not a miss.
+ImageId = Annotated[int, Field(ge=1, le=2**63 - 1)]
+
+
+class BumpRequest(BaseModel):
+    image_ids: list[ImageId] = Field(
+        min_length=1,
+        max_length=MAX_BUMP_IMAGES,
+        description=(
+            "Ids of the caller's images to move to the top of the gallery. The order matters: "
+            "the last id ends up on top."
+        ),
+    )
+
+
+class BumpResponse(BaseModel):
+    # Ids that are missing, or not the caller's, are left out.
+    items: list[ImageOut] = Field(
+        description="The images that moved, in the order of the request, with signed thumbnails."
+    )
+
+
 class ErrorDetail(BaseModel):
     code: str
     message: str

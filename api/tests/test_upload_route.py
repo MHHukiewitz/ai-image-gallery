@@ -25,6 +25,7 @@ class InMemoryObjectStore:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.fail_signing = False
+        self.signing_calls: list[list[str]] = []
 
     async def put(self, path: str, data: bytes, content_type: str) -> None:
         self.objects[path] = data
@@ -37,6 +38,7 @@ class InMemoryObjectStore:
             self.objects.pop(path, None)
 
     async def signed_urls(self, paths: Sequence[str], ttl_seconds: int) -> dict[str, str]:
+        self.signing_calls.append(list(paths))
         if self.fail_signing:
             raise ConnectionError("storage is saturated")
         return {path: f"https://storage.test/{path}?token=abc" for path in paths}
@@ -90,6 +92,14 @@ class InMemoryImageRepo:
             self.order.remove(image_id)
             self.order.insert(0, image_id)
         return record
+
+    async def bump_many(self, image_ids: Sequence[int]) -> list[ImageRecord]:
+        bumped = []
+        for image_id in image_ids:
+            record = await self.bump(image_id)
+            if record is not None:
+                bumped.append(record)
+        return bumped
 
 
 @pytest.fixture
@@ -422,6 +432,143 @@ def test_bump_with_a_non_numeric_id_is_a_422(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "validation_error"
 
 
+# --- POST /api/v1/images/bump --------------------------------------------------------------
+
+BUMP_URL = f"{URL}/bump"
+
+
+def seed_images(repo: InMemoryImageRepo, count: int) -> list[int]:
+    """Give the caller `count` images, the first one the oldest, and return their ids."""
+    ids = []
+    for position in range(count):
+        image_id = 100 + position
+        folder = f"{USER_ID}/{image_id}"
+        record = make_record(
+            image_id,
+            NewImage(
+                user_id=USER_ID,
+                filename=f"photo-{image_id}.jpg",
+                original_path=f"{folder}/original.jpg",
+                thumbnail_path=f"{folder}/thumb.webp",
+                mime_type="image/jpeg",
+                size_bytes=1234,
+                width=640,
+                height=480,
+                content_sha256=f"{image_id:064x}",
+            ),
+        )
+        repo.by_hash[record.content_sha256] = record
+        repo.order.insert(0, image_id)
+        ids.append(image_id)
+    return ids
+
+
+def test_batch_bump_answers_200_with_the_images_in_the_order_given(
+    client: TestClient, repo: InMemoryImageRepo
+) -> None:
+    first, second, third = seed_images(repo, 3)
+
+    response = client.post(BUMP_URL, json={"image_ids": [first, third, second]})
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [first, third, second]
+    assert all(
+        item["thumbnail_url"].endswith("/thumb.webp?token=abc") for item in response.json()["items"]
+    )
+    # The last id of the batch is on top of the gallery.
+    assert repo.order[0] == second
+
+
+def test_batch_bump_returns_the_same_shape_as_the_single_bump(
+    client: TestClient, repo: InMemoryImageRepo
+) -> None:
+    [image_id] = seed_images(repo, 1)
+
+    single = client.post(f"{URL}/{image_id}/bump").json()
+    batch = client.post(BUMP_URL, json={"image_ids": [image_id]}).json()
+
+    assert batch == {"items": [single]}
+
+
+def test_batch_bump_signs_every_thumbnail_in_one_call(
+    client: TestClient, repo: InMemoryImageRepo, store: InMemoryObjectStore
+) -> None:
+    ids = seed_images(repo, 50)
+
+    response = client.post(BUMP_URL, json={"image_ids": ids})
+
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 50
+    assert len(store.signing_calls) == 1
+    assert len(store.signing_calls[0]) == 50
+
+
+def test_batch_bump_leaves_out_missing_and_foreign_ids(
+    client: TestClient, repo: InMemoryImageRepo
+) -> None:
+    mine, other_mine = seed_images(repo, 2)
+
+    response = client.post(BUMP_URL, json={"image_ids": [mine, 9999, other_mine]})
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [mine, other_mine]
+
+
+def test_batch_bump_of_ids_that_are_all_missing_is_an_empty_list_not_a_404(
+    client: TestClient, store: InMemoryObjectStore
+) -> None:
+    response = client.post(BUMP_URL, json={"image_ids": [9998, 9999]})
+
+    assert response.status_code == 200
+    assert response.json() == {"items": []}
+    assert store.signing_calls == []
+
+
+def test_batch_bump_with_a_failing_signer_still_moves_the_images(
+    client: TestClient, repo: InMemoryImageRepo, store: InMemoryObjectStore
+) -> None:
+    [image_id] = seed_images(repo, 1)
+    store.fail_signing = True
+
+    response = client.post(BUMP_URL, json={"image_ids": [image_id]})
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["thumbnail_url"] == ""
+
+
+def test_batch_bump_takes_at_most_50_ids(client: TestClient, repo: InMemoryImageRepo) -> None:
+    ids = seed_images(repo, 51)
+
+    assert client.post(BUMP_URL, json={"image_ids": ids[:50]}).status_code == 200
+
+    too_many = client.post(BUMP_URL, json={"image_ids": ids})
+    assert too_many.status_code == 422
+    assert too_many.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"image_ids": []},
+        {"image_ids": "7"},
+        {"image_ids": [0]},
+        {"image_ids": [-1]},
+        {"image_ids": [2**63]},
+        {"image_ids": ["abc"]},
+        {"image_ids": [1.5]},
+        {"image_ids": [None]},
+        {"ids": [1]},
+    ],
+    ids=repr,
+)
+def test_batch_bump_rejects_a_malformed_body(client: TestClient, body: dict[str, Any]) -> None:
+    response = client.post(BUMP_URL, json=body)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
 # --- POST /api/v1/images/lookup ------------------------------------------------------------
 
 LOOKUP_URL = f"{URL}/lookup"
@@ -503,13 +650,13 @@ def test_lookup_rejects_a_malformed_body(client: TestClient, body: dict[str, Any
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize("path", [LOOKUP_URL, f"{URL}/42/bump"])
+@pytest.mark.parametrize("path", [LOOKUP_URL, f"{URL}/42/bump", BUMP_URL])
 def test_lookup_and_bump_without_a_token_are_a_401(
     make_app: Callable[..., FastAPI], path: str
 ) -> None:
     client = TestClient(make_app(signed_in=False), raise_server_exceptions=False)
 
-    response = client.post(path, json={"content_sha256": ["a" * 64]})
+    response = client.post(path, json={"content_sha256": ["a" * 64], "image_ids": [42]})
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
@@ -525,3 +672,13 @@ def test_lookup_and_bump_are_documented_in_the_openapi_schema(client: TestClient
         == "#/components/schemas/LookupResponse"
     )
     assert set(paths[f"{URL}/{{image_id}}/bump"]["post"]["responses"]) >= {"200", "404", "422"}
+
+    batch = paths[BUMP_URL]["post"]
+    assert set(batch["responses"]) >= {"200", "422"}
+    assert (
+        batch["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/BumpResponse"
+    )
+    request = client.get("/api/openapi.json").json()["components"]["schemas"]["BumpRequest"]
+    assert request["properties"]["image_ids"]["minItems"] == 1
+    assert request["properties"]["image_ids"]["maxItems"] == 50
