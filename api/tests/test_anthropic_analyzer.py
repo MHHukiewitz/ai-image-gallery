@@ -10,6 +10,7 @@ import base64
 import io
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 import anthropic
@@ -18,9 +19,15 @@ import pytest
 from anthropic import AsyncAnthropic
 from PIL import Image
 
+from gallery.adapters.analyzers import anthropic as anthropic_adapter
 from gallery.adapters.analyzers.anthropic import AnthropicAnalyzer
 from gallery.adapters.analyzers.images import VISION_MAX_SIDE
-from gallery.adapters.analyzers.prompt import PROMPT_VERSION, SYSTEM_PROMPT, USER_PROMPT
+from gallery.adapters.analyzers.prompt import (
+    PROMPT_VERSION,
+    SYSTEM_PROMPT,
+    USER_PROMPT,
+    repair_prompt,
+)
 from gallery.domain.errors import AnalyzerError
 
 HAIKU = "claude-haiku-5-5"
@@ -435,3 +442,205 @@ async def test_a_refusal_is_logged_with_its_category(caplog: pytest.LogCaptureFi
     (record,) = analyzer_records(caplog)
     assert record.levelno == logging.INFO
     assert vars(record)["category"] == "cyber"
+
+
+# --- repair ---
+
+THREE_TAGS = reply(["dog", "park", "grass"])
+THINKING_ONLY = [{"type": "thinking", "thinking": "", "signature": "test-signature"}]
+
+
+async def test_three_tags_trigger_one_repair_and_then_succeed() -> None:
+    provider = Provider(answer(THREE_TAGS), answer())
+
+    analysis = await make_analyzer(provider).analyze(png_bytes(), "image/png")
+
+    assert analysis.tags == ("golden retriever", "dog", "park", "grass", "sunny", "playful")
+    assert provider.calls == 2
+
+
+async def test_the_repair_request_shows_the_model_its_reply_and_the_problem() -> None:
+    provider = Provider(answer(THREE_TAGS), answer())
+
+    await make_analyzer(provider).analyze(png_bytes(), "image/png")
+
+    first, correction = provider.body(0)["messages"], provider.body(1)["messages"]
+    assert correction[0] == first[0]
+    assert correction[1] == {"role": "assistant", "content": THREE_TAGS}
+    assert correction[2]["role"] == "user"
+    assert "only 3 usable tags" in correction[2]["content"]
+    assert correction[2]["content"].startswith(repair_prompt("only 3 usable tags")[:50])
+    for body in (provider.body(0), provider.body(1)):
+        assert body["output_config"]["effort"] == "low"
+        assert "thinking" not in body
+
+
+async def test_tags_that_collapse_to_fewer_than_five_trigger_a_repair() -> None:
+    provider = Provider(answer(reply(["Dog", "dog", "DOG", "park", "sun", "---"])), answer())
+
+    await make_analyzer(provider).analyze(png_bytes(), "image/png")
+
+    assert provider.calls == 2
+
+
+async def test_an_empty_description_triggers_a_repair() -> None:
+    provider = Provider(answer(reply(TAGS, "   ")), answer())
+
+    analysis = await make_analyzer(provider).analyze(png_bytes(), "image/png")
+
+    assert analysis.description == DESCRIPTION
+    assert provider.calls == 2
+
+
+async def test_a_second_unusable_reply_is_a_retryable_error() -> None:
+    provider = Provider(answer(THREE_TAGS))
+
+    error = await analyze_failing(provider)
+
+    assert error.retryable is True
+    assert error.message == "AI returned an invalid result"
+    assert provider.calls == 2
+
+
+async def test_a_reply_cut_off_at_max_tokens_is_repaired() -> None:
+    cut_off = answer('{"tags": ["dog", "park"', stop_reason="max_tokens")
+    provider = Provider(cut_off, answer())
+
+    analysis = await make_analyzer(provider).analyze(png_bytes(), "image/png")
+
+    assert analysis.description == DESCRIPTION
+    assert provider.calls == 2
+    # The SDK rejects the unfinished JSON before we see it, so there's no reply to show.
+    assert provider.body(1)["messages"][1] == {
+        "role": "assistant",
+        "content": "(no usable reply)",
+    }
+
+
+async def test_max_tokens_spent_on_thinking_is_repaired() -> None:
+    provider = Provider(message(THINKING_ONLY, stop_reason="max_tokens"), answer())
+
+    analysis = await make_analyzer(provider).analyze(png_bytes(), "image/png")
+
+    assert analysis.description == DESCRIPTION
+    assert provider.calls == 2
+    assert provider.body(1)["messages"][1]["content"] == "(no usable reply)"
+
+
+async def test_max_tokens_is_repaired_even_when_the_json_looks_complete() -> None:
+    provider = Provider(answer(stop_reason="max_tokens"), answer())
+
+    await make_analyzer(provider).analyze(png_bytes(), "image/png")
+
+    assert provider.calls == 2
+    assert provider.body(1)["messages"][1]["content"] == reply()
+
+
+async def test_a_reply_that_stays_cut_off_is_a_retryable_error() -> None:
+    provider = Provider(message(THINKING_ONLY, stop_reason="max_tokens"))
+
+    error = await analyze_failing(provider)
+
+    assert error.retryable is True
+    assert error.message == "AI returned an invalid result"
+    assert provider.calls == 2
+
+
+async def test_a_failing_repair_request_is_classified_like_any_other() -> None:
+    provider = Provider(answer(THREE_TAGS), failure(401))
+
+    error = await analyze_failing(provider)
+
+    assert error.retryable is False
+    assert error.message == "AI service rejected the request"
+
+
+# --- usage ---
+
+
+async def test_usage_maps_tokens_and_cost_from_the_response() -> None:
+    provider = Provider(answer(input_tokens=1500, output_tokens=120))
+
+    analysis = await make_analyzer(provider).analyze(png_bytes(), "image/png")
+
+    assert analysis.usage is not None
+    assert analysis.usage.input_tokens == 1500
+    assert analysis.usage.output_tokens == 120
+    # 1,500 input tokens at $0.10 per million plus 120 output tokens at $0.50 per million.
+    assert analysis.usage.cost_usd == pytest.approx(0.00021)
+    assert analysis.usage.latency_ms >= 0
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_cost"),
+    [(HAIKU, 0.0004), (SONNET, 0.008), (OPUS, 0.016)],
+)
+async def test_usage_sums_tokens_and_cost_across_the_repair_attempt(
+    model: str, expected_cost: float
+) -> None:
+    provider = Provider(
+        answer(THREE_TAGS, model=model, input_tokens=1500, output_tokens=100),
+        answer(model=model, input_tokens=1600, output_tokens=80),
+    )
+
+    analysis = await make_analyzer(provider, model).analyze(png_bytes(), "image/png")
+
+    assert analysis.usage is not None
+    assert analysis.usage.input_tokens == 3100
+    assert analysis.usage.output_tokens == 180
+    assert analysis.usage.cost_usd == pytest.approx(expected_cost)
+
+
+async def test_an_unknown_model_has_tokens_but_no_cost() -> None:
+    model = "claude-test-unknown"
+    provider = Provider(answer(model=model, input_tokens=900, output_tokens=60))
+
+    analysis = await make_analyzer(provider, model).analyze(png_bytes(), "image/png")
+
+    assert analysis.usage is not None
+    assert analysis.usage.input_tokens == 900
+    assert analysis.usage.output_tokens == 60
+    assert analysis.usage.cost_usd is None
+
+
+async def test_cost_is_priced_on_the_model_that_answered_after_a_fallback() -> None:
+    fallback_model = "claude-opus-4-8"
+    served_by_fallback = [
+        {
+            "type": "fallback_message",
+            "model": fallback_model,
+            "input_tokens": 2000,
+            "output_tokens": 200,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+    ]
+    provider = Provider(
+        answer(
+            model=fallback_model,
+            input_tokens=2000,
+            output_tokens=200,
+            iterations=served_by_fallback,
+        )
+    )
+
+    analysis = await make_analyzer(provider, OPUS).analyze(png_bytes(), "image/png")
+
+    assert analysis.usage is not None
+    # Claude Opus 4.8 costs $5 and $25 per million tokens, where Opus 5.5 costs $4 and $20.
+    assert analysis.usage.cost_usd == pytest.approx((2000 * 5 + 200 * 25) / 1_000_000)
+
+
+async def test_latency_is_the_wall_time_of_the_whole_call_including_the_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = iter([100.0, 100.25])
+    monkeypatch.setattr(
+        anthropic_adapter, "time", SimpleNamespace(perf_counter=lambda: next(clock))
+    )
+    provider = Provider(answer(THREE_TAGS), answer())
+
+    analysis = await make_analyzer(provider).analyze(png_bytes(), "image/png")
+
+    assert analysis.usage is not None
+    assert analysis.usage.latency_ms == 250
