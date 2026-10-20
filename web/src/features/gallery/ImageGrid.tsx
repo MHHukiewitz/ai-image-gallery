@@ -104,6 +104,7 @@ export function ImageGrid() {
 
   const images = useMemo(() => uniqueById(data?.pages.flatMap((page) => page.items) ?? []), [data]);
   const announcement = useAnalysisAnnouncement(images);
+  const showMatch = query.kind === "similar" || query.kind === "color";
 
   // A lost connection shows as a toast too, not only in the error state: a background poll can
   // fail while the grid still shows older results.
@@ -194,7 +195,7 @@ export function ImageGrid() {
       >
         {images.map((image) => (
           <li key={image.id}>
-            <ImageCard image={image} />
+            <ImageCard image={image} showMatch={showMatch} />
           </li>
         ))}
         {isFetchingNextPage && <SkeletonTiles count={NEXT_PAGE_SKELETONS} />}

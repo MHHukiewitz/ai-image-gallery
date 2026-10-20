@@ -430,3 +430,32 @@ describe("polling", () => {
     expect(mockListImages).toHaveBeenCalledTimes(1);
   }, 8000);
 });
+
+describe("match badges", () => {
+  const matchBadges = () => screen.queryAllByRole("img", { name: /% match$/ });
+
+  it.each([["/?similar_to=45"], ["/?color=%23aabbcc"]])(
+    "shows a match percentage on every tile at %s",
+    async (path) => {
+      serveMockImages();
+
+      renderGrid(path);
+
+      await waitFor(() => expect(tiles().length).toBeGreaterThan(0));
+      expect(matchBadges()).toHaveLength(tiles().length);
+      expect(matchBadges()[0]).toHaveAccessibleName(/^\d+% match$/);
+    },
+  );
+
+  it.each([["/"], ["/?q=beach"]])(
+    "shows no match percentage at %s, where the scores are not percentages",
+    async (path) => {
+      serveMockImages();
+
+      renderGrid(path);
+
+      await waitFor(() => expect(tiles().length).toBeGreaterThan(0));
+      expect(matchBadges()).toHaveLength(0);
+    },
+  );
+});
