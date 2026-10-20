@@ -5,7 +5,7 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getImage } from "../../lib/api";
-import { makeImage } from "../gallery/testFixtures";
+import type { ImageOut } from "../../lib/api";
 import { ActiveFilterRow } from "./ActiveFilterRow";
 
 vi.mock("../../lib/supabase", () => ({ supabase: {} }));
@@ -16,6 +16,19 @@ vi.mock("../../lib/api", async (importOriginal) => ({
 
 const mockGetImage = vi.mocked(getImage);
 const chip = () => screen.queryByRole("group", { name: "Active filter" });
+
+/** The image a similarity filter starts from, as the detail endpoint returns it. */
+function image(id: number): ImageOut {
+  return {
+    id,
+    filename: `photo-${id}.jpg`,
+    uploaded_at: "2026-10-20T10:00:00Z",
+    width: 1600,
+    height: 1067,
+    thumbnail_url: `https://storage.test/thumb-${id}.webp`,
+    analysis: { status: "done", tags: [], description: null, colors: [], error: null },
+  };
+}
 
 function renderRow(path: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -32,7 +45,7 @@ function renderRow(path: string) {
 
 beforeEach(() => {
   mockGetImage.mockReset();
-  mockGetImage.mockImplementation(async (id) => makeImage(id));
+  mockGetImage.mockImplementation(async (id) => image(id));
 });
 
 describe("ActiveFilterRow", () => {

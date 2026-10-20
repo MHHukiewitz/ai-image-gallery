@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import type { ImagePage } from "../../lib/api";
-import { makeImage } from "../gallery/testFixtures";
+import type { ImageOut, ImagePage } from "../../lib/api";
 import { neighborsOf, orderOf, SWIPE_MIN_PX, swipeStep } from "./imageNavigation";
 
+function image(id: number): ImageOut {
+  return {
+    id,
+    filename: `photo-${id}.jpg`,
+    uploaded_at: "2026-10-20T10:00:00Z",
+    width: 1600,
+    height: 1067,
+    thumbnail_url: `https://storage.test/thumb-${id}.webp`,
+    analysis: { status: "done", tags: [], description: null, colors: [], error: null },
+  };
+}
+
 function pageOf(ids: number[]): ImagePage {
-  return { items: ids.map((id) => makeImage(id)), next_offset: null };
+  return { items: ids.map(image), next_offset: null };
 }
 
 describe("orderOf", () => {
