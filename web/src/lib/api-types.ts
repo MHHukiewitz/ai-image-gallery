@@ -71,6 +71,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/images/bump": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bump Images
+         * @description Move the caller's images to the top of their gallery, the last id on top.
+         *
+         *     Ids that are missing or belong to someone else are left out of the answer, not an error.
+         */
+        post: operations["bump_images_api_v1_images_bump_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/images/{image_id}/bump": {
         parameters: {
             query?: never;
@@ -160,6 +182,22 @@ export interface components {
         Body_upload_image_api_v1_images_post: {
             /** File */
             file: string;
+        };
+        /** BumpRequest */
+        BumpRequest: {
+            /**
+             * Image Ids
+             * @description Ids of the caller's images to move to the top of the gallery. The order matters: the last id ends up on top.
+             */
+            image_ids: number[];
+        };
+        /** BumpResponse */
+        BumpResponse: {
+            /**
+             * Items
+             * @description The images that moved, in the order of the request, with signed thumbnails.
+             */
+            items: components["schemas"]["ImageOut"][];
         };
         /** ErrorDetail */
         ErrorDetail: {
@@ -392,6 +430,39 @@ export interface operations {
                 };
             };
             /** @description No hashes, more than 50, or a hash that isn't 64 lowercase hex digits. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    bump_images_api_v1_images_bump_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BumpRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BumpResponse"];
+                };
+            };
+            /** @description No ids, more than 50, or an id that isn't a positive integer. */
             422: {
                 headers: {
                     [name: string]: unknown;

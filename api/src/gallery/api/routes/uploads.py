@@ -1,4 +1,4 @@
-"""Upload routes: one image per request, plus the duplicate lookup and bump."""
+"""Upload routes: one image per request, plus the duplicate lookup and the bumps."""
 
 from typing import Annotated
 
@@ -12,6 +12,8 @@ from gallery.api.deps import (
     get_settings,
 )
 from gallery.api.schemas import (
+    BumpRequest,
+    BumpResponse,
     ErrorResponse,
     ImageOut,
     LookupRequest,
@@ -89,6 +91,30 @@ async def lookup_images(
 ) -> LookupResponse:
     """Say which of these content hashes the caller already has an image for."""
     return LookupResponse(matches=await service.find_duplicates(body.content_sha256))
+
+
+@router.post(
+    "/api/v1/images/bump",
+    response_model=BumpResponse,
+    dependencies=[Depends(get_current_user)],
+    responses={
+        422: {
+            "model": ErrorResponse,
+            "description": "No ids, more than 50, or an id that isn't a positive integer.",
+        },
+    },
+)
+async def bump_images(
+    body: BumpRequest, service: Annotated[UploadService, Depends(get_upload_service)]
+) -> BumpResponse:
+    """Move the caller's images to the top of their gallery, the last id on top.
+
+    Ids that are missing or belong to someone else are left out of the answer, not an error.
+    """
+    results = await service.bump_many(body.image_ids)
+    return BumpResponse(
+        items=[to_image_out(r.record, thumbnail_url=r.thumbnail_url) for r in results]
+    )
 
 
 @router.post(

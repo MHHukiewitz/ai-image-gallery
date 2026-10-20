@@ -145,6 +145,21 @@ class UploadService:
             raise NotFoundError("Image not found.")
         return await self._result(record, created=False)
 
+    async def bump_many(self, image_ids: Sequence[int]) -> list[UploadResult]:
+        """Move several of the caller's images to the top of their gallery in one go.
+
+        The last id ends up on top, as if the images had been bumped one after another. Returns
+        the images that moved, in the order given, each with a signed thumbnail URL; all the
+        URLs are signed in one Storage call. An id that is missing or belongs to someone else is
+        left out of the result, because the repo runs as the caller and the two look the same.
+        """
+        records = await self._repo.bump_many(image_ids)
+        urls = await self._sign_thumbnails([record.thumbnail_path for record in records])
+        return [
+            UploadResult(record, urls.get(record.thumbnail_path, ""), created=False)
+            for record in records
+        ]
+
     async def find_duplicates(self, sha256s: Sequence[str]) -> dict[str, int]:
         """Map each hash the caller already has an image for to that image's id.
 
@@ -165,16 +180,26 @@ class UploadService:
 
         The grid asks for fresh URLs while any is empty, so a later request fills this one in.
         """
+        urls = await self._sign_thumbnails([thumbnail_path])
+        return urls.get(thumbnail_path, "")
+
+    async def _sign_thumbnails(self, thumbnail_paths: Sequence[str]) -> dict[str, str]:
+        """Sign the thumbnails in one Storage call. A path that can't be signed is left out.
+
+        If Storage fails altogether, nothing is signed and the caller shows empty URLs, which the
+        grid refreshes on its next request: the images themselves were saved or moved.
+        """
+        if not thumbnail_paths:
+            return {}
         try:
-            urls = await self._store.signed_urls([thumbnail_path], self._signed_url_ttl)
+            return await self._store.signed_urls(thumbnail_paths, self._signed_url_ttl)
         except Exception:
             logger.warning(
-                "could not sign the thumbnail of an uploaded image",
-                extra={"thumbnail_path": thumbnail_path},
+                "could not sign the thumbnails of uploaded images",
+                extra={"thumbnail_paths": list(thumbnail_paths)},
                 exc_info=True,
             )
-            return ""
-        return urls.get(thumbnail_path, "")
+            return {}
 
     async def _remove_objects(self, paths: list[str]) -> None:
         """Delete objects a failed upload left behind, without hiding the error that caused it."""

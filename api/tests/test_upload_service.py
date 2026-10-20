@@ -93,6 +93,7 @@ class InMemoryImageRepo:
         self.existing: dict[str, ImageRecord] = {}
         self.lookups: list[list[str]] = []
         self.bumped: list[int] = []
+        self.bumped_batches: list[list[int]] = []
         # Set when the image disappears between the lookup and the bump.
         self.bump_finds_nothing = False
 
@@ -111,6 +112,11 @@ class InMemoryImageRepo:
         if self.bump_finds_nothing:
             return None
         return next((r for r in self.existing.values() if r.id == image_id), None)
+
+    async def bump_many(self, image_ids: Sequence[int]) -> list[ImageRecord]:
+        self.bumped_batches.append(list(image_ids))
+        by_id = {r.id: r for r in self.existing.values()}
+        return [by_id[image_id] for image_id in image_ids if image_id in by_id]
 
 
 @pytest.fixture(autouse=True)
@@ -322,7 +328,7 @@ async def test_a_signing_failure_after_the_insert_still_returns_the_saved_image(
     assert set(store.objects) == {record.original_path, record.thumbnail_path}
     [warning] = [r for r in caplog.records if r.name == "gallery.services.uploads"]
     assert warning.levelno == logging.WARNING
-    assert warning.thumbnail_path == record.thumbnail_path
+    assert warning.thumbnail_paths == [record.thumbnail_path]
 
 
 async def test_a_thumbnail_the_store_leaves_unsigned_gives_an_empty_url(
@@ -570,6 +576,71 @@ async def test_bumping_a_missing_or_foreign_image_raises_not_found(
         await service.bump(404)
 
     assert repo.bumped == [404]
+
+
+async def test_bump_many_returns_the_moved_images_in_order_with_one_signing_call(
+    service: UploadService, repo: InMemoryImageRepo, store: InMemoryObjectStore
+) -> None:
+    first = an_existing_image(a_jpeg(), image_id=3)
+    second = an_existing_image(a_png(), image_id=9)
+    repo.existing = {first.content_sha256: first, second.content_sha256: second}
+
+    results = await service.bump_many([9, 3])
+
+    assert results == [
+        UploadResult(
+            second,
+            f"https://storage.test/{second.thumbnail_path}?ttl={SIGNED_URL_TTL}",
+            created=False,
+        ),
+        UploadResult(
+            first,
+            f"https://storage.test/{first.thumbnail_path}?ttl={SIGNED_URL_TTL}",
+            created=False,
+        ),
+    ]
+    assert repo.bumped_batches == [[9, 3]]
+    # Every thumbnail is signed in a single Storage call.
+    assert store.signed == [([second.thumbnail_path, first.thumbnail_path], SIGNED_URL_TTL)]
+    assert store.objects == {}
+
+
+async def test_bump_many_leaves_out_images_that_are_missing_or_not_the_callers(
+    service: UploadService, repo: InMemoryImageRepo
+) -> None:
+    mine = an_existing_image(a_jpeg(), image_id=3)
+    repo.existing = {mine.content_sha256: mine}
+
+    results = await service.bump_many([404, 3, 405])
+
+    assert [result.record.id for result in results] == [3]
+
+
+async def test_bump_many_of_nothing_that_exists_signs_nothing(
+    service: UploadService, store: InMemoryObjectStore
+) -> None:
+    assert await service.bump_many([404]) == []
+    assert store.signed == []
+
+
+async def test_bump_many_survives_a_signing_failure_with_empty_urls(
+    service: UploadService,
+    repo: InMemoryImageRepo,
+    store: InMemoryObjectStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The images moved, so the request succeeds; the grid refreshes empty URLs on its next poll.
+    existing = an_existing_image(a_jpeg(), image_id=3)
+    repo.existing = {existing.content_sha256: existing}
+    store.fail_signing = ConnectionError("storage is saturated")
+
+    with caplog.at_level(logging.WARNING):
+        results = await service.bump_many([3])
+
+    assert [(result.record.id, result.thumbnail_url) for result in results] == [(3, "")]
+    assert [r.levelno for r in caplog.records if r.name == "gallery.services.uploads"] == [
+        logging.WARNING
+    ]
 
 
 async def test_find_duplicates_maps_hashes_to_ids_and_leaves_out_the_rest(
