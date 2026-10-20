@@ -19,7 +19,7 @@ def make_thumbnail(data: bytes, size: int = THUMBNAIL_SIZE) -> bytes:
     try:
         with Image.open(BytesIO(data)) as opened:
             # Cameras store rotation in EXIF, not in the pixels, so turn the picture upright first.
-            upright = ImageOps.exif_transpose(opened)
+            upright = _to_8_bit(ImageOps.exif_transpose(opened))
             # Resize before flattening: the work then happens on 300 x 300 pixels, not on the
             # full image. Pillow resizes RGBA with premultiplied alpha, so edges stay clean.
             mode = "RGBA" if upright.has_transparency_data else "RGB"
@@ -34,3 +34,13 @@ def make_thumbnail(data: bytes, size: int = THUMBNAIL_SIZE) -> bytes:
     except (OSError, SyntaxError, ValueError) as error:
         raise InvalidImageError("corrupt", "The image can't be decoded.") from error
     return output.getvalue()
+
+
+def _to_8_bit(image: Image.Image) -> Image.Image:
+    """Scale 16-bit grayscale down to 8 bits, as browsers do.
+
+    Pillow's own conversion clips every value above 255, which turns the picture white.
+    """
+    if image.mode.startswith("I;16"):
+        return image.point(lambda value: value * (1 / 256)).convert("L")
+    return image
