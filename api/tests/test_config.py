@@ -31,6 +31,9 @@ EXPECTED_SETTINGS = {
     "JEV_MODEL",
     "TAG_MIN_PROBABILITY",
     "TAG_VERIFIER_TIMEOUT_SECONDS",
+    "EMBEDDER",
+    "EMBEDDING_MODEL",
+    "EMBEDDING_CACHE_DIR",
     "WORKER_CONCURRENCY",
     "WORKER_POLL_MIN_SECONDS",
     "WORKER_POLL_MAX_SECONDS",
@@ -65,6 +68,9 @@ def test_defaults_load_with_only_required_env_vars(settings: Settings) -> None:
     assert settings.AI_API_KEY is None
     assert settings.AI_MODEL == ""
     assert settings.AI_TIMEOUT_SECONDS == 30.0
+    assert settings.EMBEDDER == "none"
+    assert settings.EMBEDDING_MODEL == "BAAI/bge-small-en-v1.5"
+    assert settings.EMBEDDING_CACHE_DIR == "/opt/models"
     assert settings.WORKER_CONCURRENCY == 4
     assert settings.WORKER_POLL_MIN_SECONDS == 1.0
     assert settings.WORKER_POLL_MAX_SECONDS == 10.0
@@ -105,6 +111,7 @@ def test_required_settings_must_be_set(monkeypatch: pytest.MonkeyPatch, missing:
         ("MAX_UPLOAD_MB", "lots"),
         # Zero slots would make every upload wait forever.
         ("UPLOAD_PROCESSING_CONCURRENCY", "0"),
+        ("EMBEDDER", "openai"),
     ],
 )
 def test_invalid_values_are_rejected(
