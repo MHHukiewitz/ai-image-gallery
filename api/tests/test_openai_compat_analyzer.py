@@ -17,7 +17,7 @@ import pytest
 from openai import AsyncOpenAI
 from PIL import Image
 
-from gallery.adapters.analyzers import openai_compat
+from gallery.adapters.analyzers import build_analyzer, openai_compat
 from gallery.adapters.analyzers.images import (
     VISION_MAX_SIDE,
     image_data_url,
@@ -32,6 +32,7 @@ from gallery.adapters.analyzers.prompt import (
     USER_PROMPT,
     repair_prompt,
 )
+from gallery.config import Settings
 from gallery.domain.errors import AnalyzerError
 
 BASE_URL = "http://provider.test/v1"
@@ -621,3 +622,33 @@ def test_prompt_states_the_rules_the_normalizers_enforce() -> None:
 
 def test_repair_prompt_includes_the_problem() -> None:
     assert "only 3 usable tags" in repair_prompt("only 3 usable tags remained")
+
+
+# --- factory ---
+
+
+def test_factory_builds_an_analyzer_from_ai_settings() -> None:
+    analyzer = build_analyzer(
+        Settings(
+            ANALYZER="openai_compat",
+            AI_BASE_URL="http://ollama.test:11434/v1",
+            AI_API_KEY="test-key",
+            AI_MODEL="llava",
+            AI_TIMEOUT_SECONDS=7.5,
+        )
+    )
+
+    assert isinstance(analyzer, OpenAICompatAnalyzer)
+    assert analyzer.analyzer_id == "openai_compat:llava:v1"
+    assert str(analyzer._client.base_url) == "http://ollama.test:11434/v1/"
+    assert analyzer._client.timeout == 7.5
+    assert analyzer._client.max_retries == 0
+
+
+@pytest.mark.parametrize(
+    ("missing", "overrides"),
+    [("AI_API_KEY", {"AI_MODEL": "m"}), ("AI_MODEL", {"AI_API_KEY": "test-key"})],
+)
+def test_factory_names_the_missing_setting(missing: str, overrides: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match=missing):
+        build_analyzer(Settings(ANALYZER="openai_compat", **overrides))
