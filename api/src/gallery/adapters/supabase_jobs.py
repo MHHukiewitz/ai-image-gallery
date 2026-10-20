@@ -86,3 +86,14 @@ class SupabaseJobQueue:
                 "p_max_attempts": self._max_attempts,
             },
         ).execute()
+
+    async def store_embedding(self, image_id: int, vector: Sequence[float], model_id: str) -> None:
+        """Attach the embedding of the image's current tags and description.
+
+        A deleted image is not an error. The database rejects a vector of the wrong size and an
+        all-zero one.
+        """
+        await self._client.rpc(
+            "store_image_embedding",
+            {"p_image_id": image_id, "p_embedding": list(vector), "p_model": model_id},
+        ).execute()

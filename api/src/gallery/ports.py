@@ -75,6 +75,25 @@ class JobQueue(Protocol):
         retryable: bool,
     ) -> None: ...
 
+    # Attaches the embedding of the image's final tags and description. Call it after `complete`:
+    # completing an analysis drops an embedding that no longer matches the new text.
+    async def store_embedding(
+        self, image_id: int, vector: Sequence[float], model_id: str
+    ) -> None: ...
+
+
+class TextEmbedder(Protocol):
+    # Names the model, for example "BAAI/bge-small-en-v1.5". It is stored with every vector,
+    # because vectors from different models can't be compared.
+    @property
+    def model_id(self) -> str: ...
+
+    @property
+    def dimensions(self) -> int: ...
+
+    # One unit-length vector per text, in the same order. Runs the model off the event loop.
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]: ...
+
 
 class AnalysisCache(Protocol):
     async def get(self, content_sha256: str, analyzer_id: str) -> Analysis | None: ...
