@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # --- Worker loop ---
     WORKER_CONCURRENCY: int = 4
     WORKER_POLL_MIN_SECONDS: float = 1.0
-    WORKER_POLL_MAX_SECONDS: float = 10.0
+    WORKER_POLL_MAX_SECONDS: float = 3.0
     JOB_MAX_ATTEMPTS: int = 3
     JOB_STALE_AFTER_SECONDS: int = 300
 

@@ -114,13 +114,22 @@ async def work_loop(
     """Claim jobs and run them, at most ``concurrency`` at a time, until ``stop`` is set.
 
     The sleep between claims starts at ``poll_min_seconds``, doubles after each one up to
-    ``poll_max_seconds``, and returns to the minimum when a claim brings work. Once ``stop`` is
-    set, nothing more is claimed and running jobs get ``drain_timeout_seconds`` to finish.
+    ``poll_max_seconds``, and returns to the minimum when a claim brings work. A job that
+    finishes cuts the sleep short, because it freed a slot that queued work may be waiting for.
+    Once ``stop`` is set, nothing more is claimed and running jobs get ``drain_timeout_seconds``
+    to finish.
     """
     semaphore = asyncio.Semaphore(concurrency)
     in_flight: set[asyncio.Task[None]] = set()
+    # Set whenever a job finishes, and cleared before each claim. A job that ends while the claim
+    # is in flight leaves it set, so the next sleep returns at once and claims again.
+    slot_freed = asyncio.Event()
     delay = poll_min_seconds
     claim_failures = 0
+
+    def job_finished(task: asyncio.Task[None]) -> None:
+        in_flight.discard(task)
+        slot_freed.set()
 
     async def run_one(job: AnalysisJob) -> None:
         async with semaphore:
@@ -137,6 +146,7 @@ async def work_loop(
             await _wait_for_slot(in_flight, stop)
             continue
 
+        slot_freed.clear()
         try:
             jobs = await queue.claim(free)
         except Exception:
@@ -162,23 +172,33 @@ async def work_loop(
         for job in jobs:
             task = asyncio.create_task(run_one(job))
             in_flight.add(task)
-            task.add_done_callback(in_flight.discard)
+            task.add_done_callback(job_finished)
         if jobs:
             delay = poll_min_seconds
             if len(in_flight) >= concurrency:
                 # Full: the next pass waits for a slot instead of sleeping.
                 continue
 
-        await _sleep_or_stop(stop, delay)
+        await _sleep_or_stop(stop, delay, wake=slot_freed)
         delay = min(delay * 2, poll_max_seconds)
 
     await _drain(in_flight, drain_timeout_seconds)
 
 
-async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:
-    """Sleep for ``seconds``, or less if ``stop`` is set meanwhile."""
-    with contextlib.suppress(TimeoutError):
-        await asyncio.wait_for(stop.wait(), timeout=seconds)
+async def _sleep_or_stop(
+    stop: asyncio.Event, seconds: float, *, wake: asyncio.Event | None = None
+) -> None:
+    """Sleep for ``seconds``, or less if ``stop`` is set, or ``wake`` when one is given."""
+    if wake is None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=seconds)
+        return
+    waiters = {asyncio.create_task(stop.wait()), asyncio.create_task(wake.wait())}
+    try:
+        await asyncio.wait(waiters, timeout=seconds, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
 
 
 async def _wait_for_slot(in_flight: set[asyncio.Task[None]], stop: asyncio.Event) -> None:

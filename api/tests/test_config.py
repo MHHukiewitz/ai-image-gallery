@@ -75,7 +75,7 @@ def test_defaults_load_with_only_required_env_vars(settings: Settings) -> None:
     assert settings.EMBEDDING_CACHE_DIR == "/opt/models"
     assert settings.WORKER_CONCURRENCY == 4
     assert settings.WORKER_POLL_MIN_SECONDS == 1.0
-    assert settings.WORKER_POLL_MAX_SECONDS == 10.0
+    assert settings.WORKER_POLL_MAX_SECONDS == 3.0
     assert settings.JOB_MAX_ATTEMPTS == 3
     assert settings.JOB_STALE_AFTER_SECONDS == 300
     assert settings.LOG_LEVEL == "INFO"
