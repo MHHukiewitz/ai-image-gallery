@@ -104,6 +104,10 @@ def _load_thumbnail(data: bytes) -> Image.Image:
     """Decode `data` into an upright RGB image that fits inside THUMBNAIL_SIZE."""
     try:
         with Image.open(BytesIO(data)) as opened:
+            # For a JPEG, decode at 1/2, 1/4 or 1/8 scale instead of full size: a 12 MP photo is
+            # 36 MB of pixels, and the steps below copy it. This must come before the pixels load.
+            # Twice the target keeps the downscale below as sharp as before.
+            opened.draft("RGB", (2 * THUMBNAIL_SIZE[0], 2 * THUMBNAIL_SIZE[1]))
             # Cameras store rotation in EXIF, not in the pixels, so apply it before the thumbnail.
             upright = ImageOps.exif_transpose(opened)
             rgb = _flatten_onto_white(upright)
