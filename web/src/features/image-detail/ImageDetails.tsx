@@ -117,7 +117,7 @@ export function ImageDetails({ image, onDelete }: ImageDetailsProps) {
         >
           Find similar
         </Button>
-        <Button variant="danger" onClick={onDelete}>
+        <Button variant="danger-secondary" onClick={onDelete}>
           Delete
         </Button>
       </div>
