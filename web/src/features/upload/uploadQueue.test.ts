@@ -5,6 +5,8 @@ import {
   initialUploadQueue,
   nextToStart,
   summarizeQueue,
+  TOUCH_UPLOAD_CONCURRENCY,
+  uploadConcurrency,
   uploadQueueReducer,
 } from "./uploadQueue";
 import type { UploadAction, UploadItem, UploadQueueState } from "./uploadQueue";
@@ -331,6 +333,53 @@ describe("summarizeQueue", () => {
     const state = run([added(1), { type: "start", id: "f1" }, { type: "succeed", id: "f1" }]);
 
     expect(summarizeQueue(state)).toBe("Upload complete");
+  });
+});
+
+describe("uploadConcurrency", () => {
+  const withPointer = (coarse: boolean) => ({
+    matchMedia: (query: string) => ({ matches: coarse && query === "(pointer: coarse)" }),
+  });
+
+  it("uploads one file at a time on a touch device", () => {
+    expect(uploadConcurrency(withPointer(true))).toBe(1);
+    expect(TOUCH_UPLOAD_CONCURRENCY).toBe(1);
+  });
+
+  it("uploads two at a time with a fine pointer", () => {
+    expect(uploadConcurrency(withPointer(false))).toBe(2);
+  });
+
+  it("asks about the primary pointer", () => {
+    const asked: string[] = [];
+
+    uploadConcurrency({
+      matchMedia: (query) => {
+        asked.push(query);
+        return { matches: false };
+      },
+    });
+
+    expect(asked).toEqual(["(pointer: coarse)"]);
+  });
+
+  it("falls back to two where there is no matchMedia", () => {
+    expect(uploadConcurrency({})).toBe(2);
+  });
+
+  it("is what nextToStart needs: one file starts on a touch device, two elsewhere", () => {
+    const state = run([added(6)]);
+
+    expect(ids(nextToStart(state, uploadConcurrency(withPointer(true))))).toEqual(["f1"]);
+    expect(ids(nextToStart(state, uploadConcurrency(withPointer(false))))).toEqual(["f1", "f2"]);
+  });
+
+  it("starts the next file only after the single running one finishes", () => {
+    const touch = uploadConcurrency(withPointer(true));
+    const running = run([{ type: "start", id: "f1" }], run([added(3)]));
+
+    expect(nextToStart(running, touch)).toEqual([]);
+    expect(ids(nextToStart(run([{ type: "succeed", id: "f1" }], running), touch))).toEqual(["f2"]);
   });
 });
 
