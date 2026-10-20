@@ -5,10 +5,18 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { toast } from "../../components/ui/toast";
-import { ApiError, bumpImage, LOOKUP_LIMIT, lookupImages, uploadImage } from "../../lib/api";
+import {
+  ApiError,
+  BUMP_LIMIT,
+  bumpImages,
+  LOOKUP_LIMIT,
+  lookupImages,
+  uploadImage,
+} from "../../lib/api";
 import type { ImageOut, ImagePage, UploadOptions } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
 import { hashFile } from "./hashFile";
+import { summarizeQueue } from "./uploadQueue";
 import { AUTO_DISMISS_MS, DUPLICATE_DISMISS_MS, useUploads } from "./useUploads";
 
 vi.mock("../../lib/supabase", () => ({ supabase: { auth: {} } }));
@@ -18,7 +26,7 @@ vi.mock("../../lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/api")>()),
   uploadImage: vi.fn(),
   lookupImages: vi.fn(),
-  bumpImage: vi.fn(),
+  bumpImages: vi.fn(),
 }));
 
 interface PendingUpload {
@@ -87,6 +95,10 @@ beforeEach(() => {
   pending = [];
   vi.mocked(hashFile).mockImplementation((file) => Promise.resolve(sha(file.name)));
   vi.mocked(lookupImages).mockResolvedValue({});
+  // Like the API: every id the user owns comes back, in the order asked.
+  vi.mocked(bumpImages).mockImplementation((ids) =>
+    Promise.resolve(ids.map((id) => image(id, `old-${id}.png`))),
+  );
   vi.mocked(uploadImage).mockImplementation(
     (file, options = {}) =>
       new Promise((resolveUpload, reject) => {
@@ -318,13 +330,13 @@ describe("useUploads: files the user already has", () => {
 
   it("bumps a match instead of uploading it, and uploads the rest", async () => {
     vi.mocked(lookupImages).mockResolvedValue({ [sha("photo-2.png")]: 22 });
-    vi.mocked(bumpImage).mockResolvedValue(image(22, "photo-2.png"));
+    vi.mocked(bumpImages).mockResolvedValue([image(22, "photo-2.png")]);
     const { result } = setup();
 
     await drop(result, files(3));
 
-    expect(bumpImage).toHaveBeenCalledOnce();
-    expect(vi.mocked(bumpImage).mock.calls[0][0]).toBe(22);
+    expect(bumpImages).toHaveBeenCalledOnce();
+    expect(vi.mocked(bumpImages).mock.calls[0][0]).toEqual([22]);
     expect(pending.map((upload) => upload.file.name)).toEqual(["photo-1.png", "photo-3.png"]);
     expect(result.current.items[1]).toMatchObject({
       status: "duplicate",
@@ -336,7 +348,7 @@ describe("useUploads: files the user already has", () => {
 
   it("moves the bumped image to the top of the grid's cache and refetches the lists", async () => {
     vi.mocked(lookupImages).mockResolvedValue({ [sha("photo-1.png")]: 1 });
-    vi.mocked(bumpImage).mockResolvedValue(image(1, "photo-1.png"));
+    vi.mocked(bumpImages).mockResolvedValue([image(1, "photo-1.png")]);
     const { result, queryClient, invalidate } = setup();
     cacheWith(queryClient, 3, 2, 1);
 
@@ -362,7 +374,6 @@ describe("useUploads: files the user already has", () => {
       [sha("photo-1.png")]: 11,
       [sha("photo-3.png")]: 33,
     });
-    vi.mocked(bumpImage).mockImplementation((id) => Promise.resolve(image(id, `old-${id}.png`)));
     const { result } = setup();
 
     await drop(result, files(3));
@@ -371,28 +382,120 @@ describe("useUploads: files the user already has", () => {
     expect(toast.success).toHaveBeenCalledWith("2 already in your gallery, moved to top");
   });
 
-  it("bumps one at a time in drop order, so the last file of the drop ends up on top", async () => {
+  it("bumps the duplicates of a drop in one request, in drop order", async () => {
+    vi.mocked(lookupImages).mockResolvedValue({
+      [sha("photo-1.png")]: 11,
+      [sha("photo-2.png")]: 22,
+      [sha("photo-3.png")]: 33,
+    });
+    const { result, queryClient } = setup();
+    cacheWith(queryClient, 22, 11, 5);
+
+    await drop(result, files(3));
+
+    expect(vi.mocked(bumpImages).mock.calls.map(([ids]) => ids)).toEqual([[11, 22, 33]]);
+    // The last file of the drop is on top, as it would be after three uploads.
+    expect(cachedIds(queryClient)).toEqual([33, 22, 11, 5]);
+    expect(statuses(result.current.items)).toEqual(["duplicate", "duplicate", "duplicate"]);
+  });
+
+  it("orders the grid by the drop even when the answer comes back in another order", async () => {
     vi.mocked(lookupImages).mockResolvedValue({
       [sha("photo-1.png")]: 11,
       [sha("photo-2.png")]: 22,
     });
-    const settleBump: Array<(img: ImageOut) => void> = [];
-    vi.mocked(bumpImage).mockImplementation(
-      (id) => new Promise<ImageOut>((resolve) => settleBump.push((img) => resolve({ ...img, id }))),
-    );
+    vi.mocked(bumpImages).mockResolvedValue([image(22, "x"), image(11, "x")]);
     const { result, queryClient } = setup();
-    cacheWith(queryClient, 22, 11, 5);
+    cacheWith(queryClient, 5);
 
     await drop(result, files(2));
-    expect(vi.mocked(bumpImage).mock.calls.map(([id]) => id)).toEqual([11]);
-
-    settleBump[0](image(11, "x"));
-    await settle();
-    expect(vi.mocked(bumpImage).mock.calls.map(([id]) => id)).toEqual([11, 22]);
-    settleBump[1](image(22, "x"));
-    await settle();
 
     expect(cachedIds(queryClient)).toEqual([22, 11, 5]);
+  });
+
+  it("sends one bump request per 50 duplicates, one after the other", async () => {
+    const many = Array.from({ length: 120 }, (_, index) => new File(["x"], `many-${index}.png`));
+    const idOf = (hash: string) => 1000 + many.findIndex((file) => sha(file.name) === hash);
+    vi.mocked(lookupImages).mockImplementation((hashes) =>
+      Promise.resolve(Object.fromEntries(hashes.map((hash) => [hash, idOf(hash)]))),
+    );
+    const settleBump: Array<() => void> = [];
+    vi.mocked(bumpImages).mockImplementation(
+      (ids) =>
+        new Promise<ImageOut[]>((resolve) =>
+          settleBump.push(() => resolve(ids.map((id) => image(id, "x")))),
+        ),
+    );
+    const { result, queryClient } = setup();
+    cacheWith(queryClient, 5);
+
+    await drop(result, many);
+
+    // The first chunk is out. The next waits for its answer, so a later chunk lands on top.
+    expect(BUMP_LIMIT).toBe(50);
+    expect(vi.mocked(bumpImages).mock.calls).toHaveLength(1);
+    settleBump[0]();
+    await settle();
+    expect(vi.mocked(bumpImages).mock.calls).toHaveLength(2);
+    settleBump[1]();
+    await settle();
+    settleBump[2]();
+    await settle();
+
+    const sizes = vi.mocked(bumpImages).mock.calls.map(([ids]) => ids.length);
+    expect(sizes).toEqual([50, 50, 20]);
+    expect(vi.mocked(bumpImages).mock.calls.flatMap(([ids]) => ids)).toEqual(
+      many.map((_, index) => 1000 + index),
+    );
+    expect(lookupImages).toHaveBeenCalledTimes(3);
+    expect(statuses(result.current.items)).toEqual(many.map(() => "duplicate"));
+    expect(cachedIds(queryClient)?.slice(0, 3)).toEqual([1119, 1118, 1117]);
+    expect(toast.success).toHaveBeenCalledWith("120 already in your gallery, moved to top");
+  });
+
+  it("makes a single bump request for fewer than 50 duplicates", async () => {
+    const some = files(40);
+    vi.mocked(lookupImages).mockResolvedValue(
+      Object.fromEntries(some.map((file, index) => [sha(file.name), 100 + index])),
+    );
+    const { result } = setup();
+
+    await drop(result, some);
+
+    expect(bumpImages).toHaveBeenCalledOnce();
+    expect(vi.mocked(bumpImages).mock.calls[0][0]).toHaveLength(40);
+    expect(lookupImages).toHaveBeenCalledOnce();
+    expect(pending).toHaveLength(0);
+  });
+
+  it("shows how many files of a drop have been hashed", async () => {
+    const hashers: Array<() => void> = [];
+    vi.mocked(hashFile).mockImplementation(
+      (file) =>
+        new Promise((resolve) => {
+          // The second file can't be hashed: it still counts as read.
+          hashers.push(() => resolve(file.name === "photo-2.png" ? null : sha(file.name)));
+        }),
+    );
+    vi.mocked(lookupImages).mockReturnValue(new Promise(() => undefined));
+    const { result } = setup();
+
+    act(() => result.current.addFiles(files(3)));
+    await settle();
+    expect(summarizeQueue(result.current.items)).toBe("Checking 0 of 3…");
+
+    // Hashing is one file at a time, so each file starts when the one before it is done.
+    hashers[0]();
+    await settle();
+    expect(summarizeQueue(result.current.items)).toBe("Checking 1 of 3…");
+    hashers[1]();
+    await settle();
+    expect(summarizeQueue(result.current.items)).toBe("Checking 2 of 3…");
+    hashers[2]();
+    await settle();
+
+    // All hashed: now it waits for the lookup.
+    expect(summarizeQueue(result.current.items)).toBe("Checking 3 images");
   });
 
   it("collapses identical files within a drop and uploads the first of them", async () => {
@@ -420,7 +523,7 @@ describe("useUploads: files the user already has", () => {
       Promise.resolve(file.name === "photo-3.png" ? sha("photo-1.png") : sha(file.name)),
     );
     vi.mocked(lookupImages).mockResolvedValue({ [sha("photo-2.png")]: 2 });
-    vi.mocked(bumpImage).mockResolvedValue(image(2, "old.png"));
+    vi.mocked(bumpImages).mockResolvedValue([image(2, "old.png")]);
     const { result } = setup();
 
     await drop(result, files(3));
@@ -453,7 +556,7 @@ describe("useUploads: files the user already has", () => {
 
   it("uploads a matched file after all when its bump fails, for example when it was deleted", async () => {
     vi.mocked(lookupImages).mockResolvedValue({ [sha("photo-1.png")]: 1 });
-    vi.mocked(bumpImage).mockRejectedValue(new ApiError(404, "not_found", "Image not found."));
+    vi.mocked(bumpImages).mockRejectedValue(new ApiError(500, "http_500", "Server error."));
     const { result } = setup();
 
     await drop(result, files(1));
@@ -464,6 +567,69 @@ describe("useUploads: files the user already has", () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it("uploads a matched file the bump left out, because it was deleted since the lookup", async () => {
+    vi.mocked(lookupImages).mockResolvedValue({
+      [sha("photo-1.png")]: 1,
+      [sha("photo-2.png")]: 2,
+    });
+    // Image 1 is gone: the API leaves it out instead of failing the batch.
+    vi.mocked(bumpImages).mockResolvedValue([image(2, "old.png")]);
+    const { result } = setup();
+
+    await drop(result, files(2));
+
+    expect(statuses(result.current.items)).toEqual(["uploading", "duplicate"]);
+    expect(pending.map((upload) => upload.file.name)).toEqual(["photo-1.png"]);
+    expect(toast.success).toHaveBeenCalledWith("1 already in your gallery, moved to top");
+  });
+
+  it("uploads the files of a chunk that failed and still bumps the other chunks", async () => {
+    const many = Array.from({ length: 60 }, (_, index) => new File(["x"], `many-${index}.png`));
+    vi.mocked(lookupImages).mockImplementation((hashes) =>
+      Promise.resolve(Object.fromEntries(hashes.map((hash, index) => [hash, 1000 + index]))),
+    );
+    vi.mocked(bumpImages).mockRejectedValueOnce(new ApiError(500, "http_500", "Server error."));
+    const { result } = setup();
+
+    await drop(result, many);
+
+    expect(bumpImages).toHaveBeenCalledTimes(2);
+    const counts = statuses(result.current.items).reduce<Record<string, number>>(
+      (tally, status) => ({ ...tally, [status]: (tally[status] ?? 0) + 1 }),
+      {},
+    );
+    // 50 files of the failed chunk go on to upload (2 at a time), 10 were bumped.
+    expect(counts).toEqual({ duplicate: 10, uploading: 2, queued: 48 });
+    expect(toast.success).toHaveBeenCalledWith("10 already in your gallery, moved to top");
+  });
+
+  it("doesn't send a file canceled while an earlier chunk was being bumped", async () => {
+    const many = Array.from({ length: 60 }, (_, index) => new File(["x"], `many-${index}.png`));
+    vi.mocked(lookupImages).mockImplementation((hashes) =>
+      Promise.resolve(Object.fromEntries(hashes.map((hash, index) => [hash, 1000 + index]))),
+    );
+    const settleBump: Array<() => void> = [];
+    vi.mocked(bumpImages).mockImplementation(
+      (ids) =>
+        new Promise<ImageOut[]>((resolve) =>
+          settleBump.push(() => resolve(ids.map((id) => image(id, "x")))),
+        ),
+    );
+    const { result } = setup();
+    await drop(result, many);
+
+    act(() => result.current.cancel(result.current.items[55].id));
+    settleBump[0]();
+    await settle();
+    settleBump[1]();
+    await settle();
+
+    const second = vi.mocked(bumpImages).mock.calls[1][0];
+    expect(second).toHaveLength(9);
+    expect(second).not.toContain(1055);
+    expect(result.current.items[55].status).toBe("canceled");
+  });
+
   it("never bumps or uploads a file canceled while the drop was being checked", async () => {
     let answer: (matches: Record<string, number>) => void = () => undefined;
     vi.mocked(lookupImages).mockReturnValue(new Promise((resolve) => (answer = resolve)));
@@ -472,10 +638,9 @@ describe("useUploads: files the user already has", () => {
 
     act(() => result.current.cancel(result.current.items[0].id));
     answer({ [sha("photo-1.png")]: 1, [sha("photo-2.png")]: 2 });
-    vi.mocked(bumpImage).mockResolvedValue(image(2, "old.png"));
     await settle();
 
-    expect(vi.mocked(bumpImage).mock.calls.map(([id]) => id)).toEqual([2]);
+    expect(vi.mocked(bumpImages).mock.calls.map(([ids]) => ids)).toEqual([[2]]);
     expect(statuses(result.current.items)).toEqual(["canceled", "duplicate"]);
     expect(pending).toHaveLength(0);
   });
@@ -488,6 +653,17 @@ describe("useUploads: files the user already has", () => {
     unmount();
 
     expect(vi.mocked(lookupImages).mock.calls[0][1]?.signal?.aborted).toBe(true);
+  });
+
+  it("stops the bumps when the page goes away", async () => {
+    vi.mocked(lookupImages).mockResolvedValue({ [sha("photo-1.png")]: 1 });
+    vi.mocked(bumpImages).mockReturnValue(new Promise(() => undefined));
+    const { result, unmount } = setup();
+    await drop(result, files(1));
+
+    unmount();
+
+    expect(vi.mocked(bumpImages).mock.calls[0][1]?.signal?.aborted).toBe(true);
   });
 
   it("treats a 200 answer to an upload as a duplicate: top of the cache, not 'done'", async () => {
@@ -523,7 +699,7 @@ describe("useUploads: files the user already has", () => {
   it("clears a duplicate after 8 s, longer than a finished upload, so View can be tapped", async () => {
     vi.useFakeTimers();
     vi.mocked(lookupImages).mockResolvedValue({ [sha("photo-1.png")]: 1 });
-    vi.mocked(bumpImage).mockResolvedValue(image(1, "old.png"));
+    vi.mocked(bumpImages).mockResolvedValue([image(1, "old.png")]);
     const { result } = setup();
     await drop(result, files(1));
     expect(result.current.items[0].status).toBe("duplicate");

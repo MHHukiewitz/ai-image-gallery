@@ -197,6 +197,29 @@ export function bumpImage(id: number, options: { signal?: AbortSignal } = {}): P
   return apiFetch<ImageOut>(`/v1/images/${id}/bump`, { method: "POST", signal: options.signal });
 }
 
+/** The most ids one `bumpImages` request may carry. */
+export const BUMP_LIMIT = 50;
+
+/**
+ * Moves several of the user's images to the top of their gallery in one request. The order
+ * matters: the last id ends up on top, as if the images had been uploaded one after another.
+ * Returns the images that moved, in the order given; an id that is missing or isn't the user's is
+ * absent from the answer. At most `BUMP_LIMIT` ids per call.
+ */
+export async function bumpImages(
+  ids: readonly number[],
+  options: { signal?: AbortSignal } = {},
+): Promise<ImageOut[]> {
+  const body: components["schemas"]["BumpRequest"] = { image_ids: [...ids] };
+  const response = await apiFetch<components["schemas"]["BumpResponse"]>("/v1/images/bump", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: options.signal,
+  });
+  return response.items;
+}
+
 /** What an upload came back with: the image, and whether it is new or one the user already had. */
 export interface UploadedImage {
   image: ImageOut;

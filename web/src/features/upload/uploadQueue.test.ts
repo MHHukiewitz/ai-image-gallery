@@ -477,6 +477,33 @@ describe("collapse", () => {
   });
 });
 
+describe("hashed", () => {
+  it("marks a checking file as read, and leaves it checking", () => {
+    const state = run([checkingAdded(2), { type: "hashed", id: "f1" }]);
+
+    expect(state.map(({ status, hashed }) => ({ status, hashed }))).toEqual([
+      { status: "checking", hashed: true },
+      { status: "checking", hashed: undefined },
+    ]);
+  });
+
+  it("does not release the file: only ready does", () => {
+    const state = run([checkingAdded(1), { type: "hashed", id: "f1" }]);
+
+    expect(ids(nextToStart(state))).toEqual([]);
+    expect(statusOf(run([{ type: "ready", id: "f1" }], state), "f1")).toBe("queued");
+  });
+
+  it("is a no-op for a file that was canceled, is already queued or is unknown", () => {
+    const canceled = run([checkingAdded(1), { type: "cancel", id: "f1" }]);
+    const queued = run([added(1)]);
+
+    expect(run([{ type: "hashed", id: "f1" }], canceled)).toBe(canceled);
+    expect(run([{ type: "hashed", id: "f1" }], queued)).toBe(queued);
+    expect(run([{ type: "hashed", id: "nope" }], queued)).toBe(queued);
+  });
+});
+
 describe("duplicate", () => {
   it("marks a checking file as already in the gallery, and remembers which image", () => {
     const state = run([checkingAdded(1), { type: "duplicate", id: "f1", imageId: 42 }]);
@@ -516,15 +543,59 @@ describe("duplicate", () => {
   });
 });
 
+/** Marks every file of a checking drop as hashed, like the hook does one by one. */
+function hashedAll(count: number): UploadAction[] {
+  return Array.from({ length: count }, (_, index) => ({ type: "hashed", id: `f${index + 1}` }));
+}
+
 describe("summarizeQueue with duplicates", () => {
-  it("counts files being checked", () => {
-    expect(summarizeQueue(run([checkingAdded(3)]))).toBe("Checking 3 images");
-    expect(summarizeQueue(run([checkingAdded(1)]))).toBe("Checking 1 image");
+  it("counts files being checked once they are all hashed", () => {
+    expect(summarizeQueue(run([checkingAdded(3), ...hashedAll(3)]))).toBe("Checking 3 images");
+    expect(summarizeQueue(run([checkingAdded(1), ...hashedAll(1)]))).toBe("Checking 1 image");
+  });
+
+  it("shows how many files of the drop have been hashed so far", () => {
+    const drop = run([checkingAdded(30)]);
+    expect(summarizeQueue(drop)).toBe("Checking 0 of 30…");
+
+    const twelve = run(hashedAll(12), drop);
+    expect(summarizeQueue(twelve)).toBe("Checking 12 of 30…");
+
+    const all = run(hashedAll(30), drop);
+    expect(summarizeQueue(all)).toBe("Checking 30 images");
+  });
+
+  it("drops a canceled file from the count", () => {
+    const state = run([
+      checkingAdded(3),
+      { type: "hashed", id: "f1" },
+      { type: "cancel", id: "f2" },
+    ]);
+
+    expect(summarizeQueue(state)).toBe("Checking 1 of 2…");
+  });
+
+  it("drops files that were collapsed as repeats", () => {
+    const state = run([checkingAdded(3), ...hashedAll(3), { type: "collapse", ids: ["f3"] }]);
+
+    expect(summarizeQueue(state)).toBe("Checking 2 images");
+  });
+
+  it("counts a file whose hash was null like any other: it was read", () => {
+    // The hook dispatches "hashed" whether or not hashing produced a value.
+    const state = run([
+      checkingAdded(2),
+      { type: "hashed", id: "f1" },
+      { type: "hashed", id: "f2" },
+    ]);
+
+    expect(summarizeQueue(state)).toBe("Checking 2 images");
   });
 
   it("lists checking and uploading files together", () => {
     const state = run([
       checkingAdded(1),
+      ...hashedAll(1),
       {
         type: "add",
         items: [{ id: "u1", file: file("u1.png") }],
@@ -532,6 +603,19 @@ describe("summarizeQueue with duplicates", () => {
     ]);
 
     expect(summarizeQueue(state)).toBe("Checking 1 image, Uploading 1 image");
+  });
+
+  it("lists hashing progress and uploading files together", () => {
+    const state = run([
+      checkingAdded(4),
+      { type: "hashed", id: "f1" },
+      {
+        type: "add",
+        items: [{ id: "u1", file: file("u1.png") }],
+      },
+    ]);
+
+    expect(summarizeQueue(state)).toBe("Checking 1 of 4…, Uploading 1 image");
   });
 
   it("announces duplicates once nothing is left to do", () => {

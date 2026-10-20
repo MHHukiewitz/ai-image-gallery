@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   apiFetch,
+  BUMP_LIMIT,
   bumpImage,
+  bumpImages,
   deleteImage,
   getImage,
   listImages,
@@ -242,6 +244,51 @@ describe("bumpImage", () => {
     fetchMock.mockResolvedValue(errorResponse(404, "not_found", "Image not found."));
 
     await expect(bumpImage(5)).rejects.toMatchObject({ status: 404, code: "not_found" });
+  });
+});
+
+describe("bumpImages", () => {
+  it("posts the ids as JSON in order and returns the images that moved", async () => {
+    const moved = [
+      { id: 9, filename: "dog.png" },
+      { id: 5, filename: "cat.png" },
+    ];
+    fetchMock.mockResolvedValue(jsonResponse({ items: moved }));
+
+    expect(await bumpImages([9, 5])).toEqual(moved);
+
+    const { url, init, headers } = lastRequest();
+    expect(url).toBe("/api/v1/images/bump");
+    expect(init?.method).toBe("POST");
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("Authorization")).toBe("Bearer test-token");
+    // The order is part of the request: the last id ends up on top.
+    expect(JSON.parse(String(init?.body))).toEqual({ image_ids: [9, 5] });
+  });
+
+  it("returns an empty list when none of the ids is the user's", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ items: [] }));
+
+    expect(await bumpImages([404])).toEqual([]);
+  });
+
+  it("allows 50 ids per request", () => {
+    expect(BUMP_LIMIT).toBe(50);
+  });
+
+  it("throws the API's error, for example a 422 for too many ids", async () => {
+    fetchMock.mockResolvedValue(errorResponse(422, "validation_error", "image_ids: too long"));
+
+    await expect(bumpImages([1])).rejects.toMatchObject({ status: 422, code: "validation_error" });
+  });
+
+  it("passes the abort signal on", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ items: [] }));
+    const controller = new AbortController();
+
+    await bumpImages([1], { signal: controller.signal });
+
+    expect(lastRequest().init?.signal).toBe(controller.signal);
   });
 });
 
