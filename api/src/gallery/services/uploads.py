@@ -1,16 +1,22 @@
-"""Upload use case: validate, thumbnail, store and record one image.
+"""Upload use case: validate, thumbnail, store and record one image, or bump a duplicate.
 
 Ingest is synchronous, so the thumbnail is ready when the request returns. The AI analysis is not
 part of it: the new row starts `pending` and the worker picks it up.
+
+An image the user already has is not stored again. Uploading it moves the existing image to the top
+of their gallery instead.
 """
 
 import asyncio
 import hashlib
 import logging
+from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import cache
 from uuid import UUID, uuid4
 
 from gallery.config import get_settings
+from gallery.domain.errors import NotFoundError
 from gallery.domain.filenames import display_filename
 from gallery.domain.models import ImageRecord, NewImage
 from gallery.domain.thumbnails import make_thumbnail
@@ -21,6 +27,18 @@ logger = logging.getLogger(__name__)
 
 _THUMBNAIL_FILENAME = "thumb.webp"
 _THUMBNAIL_MIME_TYPE = "image/webp"
+
+
+@dataclass(frozen=True, slots=True)
+class UploadResult:
+    """What an upload produced: the image, its signed thumbnail URL, and whether it is new.
+
+    `created` is False when the user already had this image and it was bumped to the top.
+    """
+
+    record: ImageRecord
+    thumbnail_url: str
+    created: bool
 
 
 @cache
@@ -56,14 +74,22 @@ class UploadService:
             _shared_processing_slots() if processing_slots is None else processing_slots
         )
 
-    async def upload(
-        self, user_id: UUID, raw_filename: str | None, data: bytes
-    ) -> tuple[ImageRecord, str]:
-        """Store one image for `user_id` and return its record and a signed thumbnail URL.
+    async def upload(self, user_id: UUID, raw_filename: str | None, data: bytes) -> UploadResult:
+        """Store one image for `user_id`, or bump it if they already have it.
 
         Raises InvalidImageError, before anything is stored, when the file isn't an acceptable
         JPEG or PNG. If a storage or database step fails, the objects already written are removed
         and the error is re-raised.
+
+        A file whose hash matches one of the user's images writes nothing to Storage: that image
+        is moved to the top of the gallery and returned with `created=False`. The hash is computed
+        from the bytes here, never taken from the client, and RLS keeps the lookup inside the
+        caller's images.
+
+        Two identical uploads in flight at the same moment can both pass the lookup and both be
+        stored. That is accepted: the web client collapses identical files within a drop, which
+        covers the common case, and a unique constraint isn't possible while production already
+        holds duplicates.
 
         Once the row is inserted the upload has succeeded. If the thumbnail then can't be
         signed, the URL is an empty string: failing the request would report an error for an
@@ -73,6 +99,14 @@ class UploadService:
         # photos would otherwise decode side by side and exhaust the container's memory.
         async with self._processing_slots:
             info, thumbnail, content_sha256 = await asyncio.to_thread(self._process, data)
+
+        existing = (await self._repo.find_by_sha256([content_sha256])).get(content_sha256)
+        if existing is not None:
+            bumped = await self._repo.bump(existing.id)
+            if bumped is not None:
+                return await self._result(bumped, created=False)
+            # The image was deleted between the lookup and the bump, so there is nothing to move.
+            # Store the file as a new image, as if the lookup had found nothing.
 
         # The bucket policy and the database CHECK both require this {user_id}/ prefix.
         folder = f"{user_id}/{uuid4()}"
@@ -98,7 +132,29 @@ class UploadService:
             await self._remove_objects([original_path, thumbnail_path])
             raise
 
-        return record, await self._sign_thumbnail(thumbnail_path)
+        return await self._result(record, created=True)
+
+    async def bump(self, image_id: int) -> UploadResult:
+        """Move the caller's image to the top of their gallery.
+
+        Raises NotFoundError when the image is missing or belongs to someone else: the repo runs
+        as the caller, so the two look the same.
+        """
+        record = await self._repo.bump(image_id)
+        if record is None:
+            raise NotFoundError("Image not found.")
+        return await self._result(record, created=False)
+
+    async def find_duplicates(self, sha256s: Sequence[str]) -> dict[str, int]:
+        """Map each hash the caller already has an image for to that image's id.
+
+        Hashes with no match are left out. The web client uses this to bump instead of uploading.
+        """
+        matches = await self._repo.find_by_sha256(list(dict.fromkeys(sha256s)))
+        return {sha256: record.id for sha256, record in matches.items()}
+
+    async def _result(self, record: ImageRecord, *, created: bool) -> UploadResult:
+        return UploadResult(record, await self._sign_thumbnail(record.thumbnail_path), created)
 
     def _process(self, data: bytes) -> tuple[ImageInfo, bytes, str]:
         info = inspect_image(data, max_bytes=self.max_bytes, max_pixels=self._max_pixels)
