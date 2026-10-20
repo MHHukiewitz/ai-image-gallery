@@ -18,6 +18,7 @@ EXPECTED_SETTINGS = {
     "SIGNED_URL_TTL_SECONDS",
     "MAX_UPLOAD_MB",
     "MAX_IMAGE_PIXELS",
+    "UPLOAD_PROCESSING_CONCURRENCY",
     "ANALYZER",
     "ANTHROPIC_API_KEY",
     "AI_EFFORT",
@@ -56,6 +57,7 @@ def test_defaults_load_with_only_required_env_vars(settings: Settings) -> None:
     assert settings.SIGNED_URL_TTL_SECONDS == 3600
     assert settings.MAX_UPLOAD_MB == 10
     assert settings.MAX_IMAGE_PIXELS == 40_000_000
+    assert settings.UPLOAD_PROCESSING_CONCURRENCY == 2
     assert settings.ANALYZER == "fake"
     assert settings.ANTHROPIC_API_KEY is None
     assert settings.AI_EFFORT == "low"
@@ -97,7 +99,13 @@ def test_required_settings_must_be_set(monkeypatch: pytest.MonkeyPatch, missing:
 
 @pytest.mark.parametrize(
     ("name", "value"),
-    [("ANALYZER", "gemini"), ("AI_EFFORT", "max"), ("MAX_UPLOAD_MB", "lots")],
+    [
+        ("ANALYZER", "gemini"),
+        ("AI_EFFORT", "max"),
+        ("MAX_UPLOAD_MB", "lots"),
+        # Zero slots would make every upload wait forever.
+        ("UPLOAD_PROCESSING_CONCURRENCY", "0"),
+    ],
 )
 def test_invalid_values_are_rejected(
     monkeypatch: pytest.MonkeyPatch, name: str, value: str

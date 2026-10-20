@@ -1,8 +1,11 @@
+import asyncio
 import hashlib
 import logging
 import random
 import re
-from collections.abc import Sequence
+import threading
+import time
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any
@@ -14,7 +17,8 @@ from PIL.ExifTags import Base
 
 from gallery.domain.errors import InvalidImageError
 from gallery.domain.models import AnalysisStatus, ImageRecord, NewImage
-from gallery.services.uploads import UploadService
+from gallery.domain.thumbnails import make_thumbnail
+from gallery.services.uploads import UploadService, _shared_processing_slots
 
 USER_ID = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
 MAX_BYTES = 1024 * 1024
@@ -84,6 +88,14 @@ class InMemoryImageRepo:
             colors=(),
             error=None,
         )
+
+
+@pytest.fixture(autouse=True)
+def fresh_shared_processing_slots() -> Iterator[None]:
+    """Each test runs in its own event loop, and the shared cap belongs to the loop that waits."""
+    _shared_processing_slots.cache_clear()
+    yield
+    _shared_processing_slots.cache_clear()
 
 
 @pytest.fixture
@@ -423,3 +435,107 @@ async def test_the_limits_come_from_the_constructor(
 
     assert excinfo.value.code == "too_large"
     assert tight.max_bytes == len(data) - 1
+
+
+class DecodeProbe:
+    """Stands in for make_thumbnail and records how many calls run at the same moment."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.running = 0
+        self.most_running = 0
+
+    def __call__(self, data: bytes) -> bytes:
+        with self._lock:
+            self.running += 1
+            self.most_running = max(self.most_running, self.running)
+        try:
+            # Long enough for every other upload to reach the cap while this one is "decoding".
+            time.sleep(0.05)
+            return make_thumbnail(data)
+        finally:
+            with self._lock:
+                self.running -= 1
+
+
+@pytest.fixture
+def probe(monkeypatch: pytest.MonkeyPatch) -> DecodeProbe:
+    probe = DecodeProbe()
+    monkeypatch.setattr("gallery.services.uploads.make_thumbnail", probe)
+    return probe
+
+
+async def test_no_more_uploads_are_decoded_at_once_than_the_semaphore_allows(
+    repo: InMemoryImageRepo, store: InMemoryObjectStore, probe: DecodeProbe
+) -> None:
+    service = UploadService(
+        repo,
+        store,
+        max_bytes=MAX_BYTES,
+        max_pixels=MAX_PIXELS,
+        signed_url_ttl=SIGNED_URL_TTL,
+        processing_slots=asyncio.Semaphore(2),
+    )
+
+    await asyncio.gather(*(service.upload(USER_ID, "beach.jpg", a_jpeg()) for _ in range(8)))
+
+    # Capped at 2, and not lower: the cap bounds the work without serializing it.
+    assert probe.most_running == 2
+    assert len(repo.inserted) == 8
+
+
+async def test_the_cap_is_shared_by_every_service_and_comes_from_the_settings(
+    repo: InMemoryImageRepo,
+    store: InMemoryObjectStore,
+    probe: DecodeProbe,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("UPLOAD_PROCESSING_CONCURRENCY", "3")
+
+    def per_request_service() -> UploadService:
+        # The upload route builds a new service for every request.
+        return UploadService(
+            repo,
+            store,
+            max_bytes=MAX_BYTES,
+            max_pixels=MAX_PIXELS,
+            signed_url_ttl=SIGNED_URL_TTL,
+        )
+
+    await asyncio.gather(
+        *(per_request_service().upload(USER_ID, "beach.jpg", a_jpeg()) for _ in range(9))
+    )
+
+    assert probe.most_running == 3
+
+
+async def test_two_is_the_default_cap(
+    repo: InMemoryImageRepo, store: InMemoryObjectStore, probe: DecodeProbe
+) -> None:
+    service = UploadService(
+        repo, store, max_bytes=MAX_BYTES, max_pixels=MAX_PIXELS, signed_url_ttl=SIGNED_URL_TTL
+    )
+
+    await asyncio.gather(*(service.upload(USER_ID, "beach.jpg", a_jpeg()) for _ in range(6)))
+
+    assert probe.most_running == 2
+
+
+async def test_a_rejected_upload_gives_its_slot_back(
+    repo: InMemoryImageRepo, store: InMemoryObjectStore
+) -> None:
+    service = UploadService(
+        repo,
+        store,
+        max_bytes=MAX_BYTES,
+        max_pixels=MAX_PIXELS,
+        signed_url_ttl=SIGNED_URL_TTL,
+        processing_slots=asyncio.Semaphore(1),
+    )
+
+    with pytest.raises(InvalidImageError):
+        await service.upload(USER_ID, "notes.txt", b"not an image")
+
+    # Would wait forever if the failed upload still held the only slot.
+    await asyncio.wait_for(service.upload(USER_ID, "beach.jpg", a_jpeg()), timeout=5)
+    assert len(repo.inserted) == 1
