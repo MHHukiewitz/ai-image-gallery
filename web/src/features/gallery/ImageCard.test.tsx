@@ -121,4 +121,84 @@ describe("ImageCard", () => {
       "https://storage.test/thumb-1.webp?token=second",
     );
   });
+
+  describe("without a usable thumbnail", () => {
+    const placeholder = () => screen.queryByTestId("thumbnail-placeholder");
+
+    it("shows no placeholder while the thumbnail is there", () => {
+      renderCard(makeImage(1));
+
+      expect(placeholder()).not.toBeInTheDocument();
+    });
+
+    it("shows a placeholder, and no empty src, for an empty URL", () => {
+      renderCard(makeImage(1, {}, { thumbnail_url: "" }));
+
+      expect(placeholder()).toBeInTheDocument();
+      expect(screen.getByRole("img")).not.toHaveAttribute("src");
+      expect(screen.getByRole("button")).toHaveClass("aspect-square");
+    });
+
+    it("shows a placeholder when the thumbnail fails to load", () => {
+      renderCard(makeImage(1));
+
+      fireEvent.error(screen.getByRole("img"));
+
+      expect(placeholder()).toBeInTheDocument();
+    });
+
+    it("takes the first URL that arrives after the tile was empty", () => {
+      const { rerenderWith } = renderCard(makeImage(1, {}, { thumbnail_url: "" }));
+
+      rerenderWith(makeImage(1, {}, { thumbnail_url: "https://storage.test/thumb-1.webp?t=a" }));
+      expect(placeholder()).not.toBeInTheDocument();
+      expect(screen.getByRole("img")).toHaveAttribute(
+        "src",
+        "https://storage.test/thumb-1.webp?t=a",
+      );
+
+      // The next poll signs it again; the tile doesn't reload.
+      rerenderWith(makeImage(1, {}, { thumbnail_url: "https://storage.test/thumb-1.webp?t=b" }));
+      expect(screen.getByRole("img")).toHaveAttribute(
+        "src",
+        "https://storage.test/thumb-1.webp?t=a",
+      );
+    });
+
+    it("tries a fresh URL once after a failed load, then gives up on it", () => {
+      const { rerenderWith } = renderCard(makeImage(1));
+      rerenderWith(
+        makeImage(1, {}, { thumbnail_url: "https://storage.test/thumb-1.webp?token=second" }),
+      );
+
+      fireEvent.error(screen.getByRole("img"));
+      expect(placeholder()).not.toBeInTheDocument();
+
+      fireEvent.error(screen.getByRole("img"));
+      expect(placeholder()).toBeInTheDocument();
+    });
+
+    it("recovers when a new URL arrives after the thumbnail failed", () => {
+      const { rerenderWith } = renderCard(makeImage(1));
+      fireEvent.error(screen.getByRole("img"));
+      expect(placeholder()).toBeInTheDocument();
+
+      rerenderWith(
+        makeImage(1, {}, { thumbnail_url: "https://storage.test/thumb-1.webp?token=second" }),
+      );
+
+      expect(placeholder()).not.toBeInTheDocument();
+      expect(screen.getByRole("img")).toHaveAttribute(
+        "src",
+        "https://storage.test/thumb-1.webp?token=second",
+      );
+    });
+
+    it("keeps the Analyzing pill on top of the placeholder", () => {
+      renderCard(makeImage(1, { status: "pending", tags: [] }, { thumbnail_url: "" }));
+
+      expect(placeholder()).toBeInTheDocument();
+      expect(screen.getByText("Analyzing…")).toBeInTheDocument();
+    });
+  });
 });
