@@ -222,7 +222,7 @@ The prompt is versioned (`PROMPT_VERSION`), and `analyzer_id = f"{provider}:{mod
 
 **Cost control.** The image is downscaled to a 1024 px long side as JPEG q85 before sending. This uses Everlast's `normalize_image` pattern. Colors never cost tokens.
 
-**Provider choice.** We use **Claude through the Anthropic API**. It's paid from the Max plan's monthly API credits, so this demo's volume costs nothing extra. **Mike picks the model** from #6's measured benchmark, which is the deliverable for the 15% research item.
+**Provider choice.** We use **Claude through the Anthropic API**. The full comparison and rationale are in the decision record, **[ai-service-choice.md](ai-service-choice.md)**. It's paid from the Max plan's monthly API credits, so this demo's volume costs nothing extra. **Mike picks the model** from #6's measured benchmark, which is the deliverable for the 15% research item.
 
 The benchmark runs 20 fixture images through these candidates:
 - **Claude:** `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`, directly through the native adapter (#31);
