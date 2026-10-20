@@ -4,21 +4,37 @@ The service depends on the ports only. The adapters run as the caller, so a miss
 another user's image look the same here, and both raise NotFoundError.
 """
 
+import asyncio
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 
+from gallery.domain.embedding_text import embedding_text
 from gallery.domain.errors import NotFoundError
-from gallery.domain.models import GalleryQuery, ImageRecord, Page, SimilarTo
-from gallery.ports import ImageRepo, ObjectStore
+from gallery.domain.models import GalleryQuery, ImageRecord, Page, SimilarTo, TextQuery
+from gallery.ports import ImageRepo, ObjectStore, TextEmbedder
 
 logger = logging.getLogger(__name__)
 
+# The first search loads the model, which takes about a second. Past this, a slow or stuck model
+# stops holding up the page and the search runs on words alone.
+_EMBED_TIMEOUT_SECONDS = 10.0
+
 
 class GalleryService:
-    def __init__(self, repo: ImageRepo, store: ObjectStore, *, signed_url_ttl: int) -> None:
+    def __init__(
+        self,
+        repo: ImageRepo,
+        store: ObjectStore,
+        *,
+        signed_url_ttl: int,
+        embedder: TextEmbedder | None = None,
+    ) -> None:
+        """`embedder` makes text search find images by meaning too. None searches words only."""
         self._repo = repo
         self._store = store
         self._signed_url_ttl = signed_url_ttl
+        self._embedder = embedder
 
     async def list(
         self, query: GalleryQuery, *, limit: int, offset: int
@@ -33,12 +49,41 @@ class GalleryService:
         A "similar to" search for an image the caller can't see raises NotFoundError. Without
         this check the search would return an empty page, which can't be told apart from an image
         with nothing similar to it.
+
+        A text search is embedded first when there is an embedder, so it also finds images by
+        meaning. If that fails, the search runs on words alone.
         """
         if isinstance(query, SimilarTo) and await self._repo.get(query.image_id) is None:
             raise NotFoundError("Image not found.")
+        if isinstance(query, TextQuery):
+            query = await self._with_embedding(query)
         page = await self._repo.list(query, limit=limit, offset=offset)
         thumbnail_urls = await self._sign([image.thumbnail_path for image in page.items])
         return page, thumbnail_urls
+
+    async def _with_embedding(self, query: TextQuery) -> TextQuery:
+        """Attach the query's embedding, or return the query as it is when there is none.
+
+        The query is embedded as if it were the only tag of an image, in the format the stored
+        vectors were made from, because that is what `search_semantic_min()` was calibrated on.
+        Any failure leaves the query without an embedding, and the logged warning doesn't hold
+        the query, which is the user's text.
+        """
+        if self._embedder is None or not query.q.strip():
+            return query
+        try:
+            (vector,) = await asyncio.wait_for(
+                self._embedder.embed([embedding_text([query.q], "")]),
+                timeout=_EMBED_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.warning(
+                "could not embed a search query, searching by words only",
+                extra={"query_length": len(query.q)},
+                exc_info=True,
+            )
+            return query
+        return replace(query, embedding=tuple(vector))
 
     async def get(self, image_id: int) -> tuple[ImageRecord, str, str]:
         """Return the image with its thumbnail and original URLs.
