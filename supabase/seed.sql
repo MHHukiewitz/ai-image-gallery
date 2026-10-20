@@ -1,0 +1,6 @@
+-- Local seed data, loaded by `supabase db reset` after the migrations (config.toml [db.seed]).
+--
+-- Intentionally empty. Every images row must point at real objects in Storage, which SQL can't
+-- create, so sample rows would only show broken thumbnails. Sign up in the app instead: email
+-- confirmation is off locally (architecture.md section 14). The pgTAP tests create their own
+-- users and rows inside a transaction that rolls back.
