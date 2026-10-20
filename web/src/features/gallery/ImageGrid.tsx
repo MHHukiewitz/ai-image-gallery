@@ -7,13 +7,15 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorState } from "../../components/ui/ErrorState";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { Spinner } from "../../components/ui/Spinner";
-import { listImages, PAGE_SIZE } from "../../lib/api";
+import { toast } from "../../components/ui/toast";
+import { ApiError, listImages, PAGE_SIZE } from "../../lib/api";
 import type { ImageOut } from "../../lib/api";
 import { useGalleryQuery } from "../../lib/galleryQuery";
 import type { GalleryQuery } from "../../lib/galleryQuery";
 import { queryKeys } from "../../lib/queryKeys";
 import { ImageCard } from "./ImageCard";
 import { refetchIntervalFor } from "./polling";
+import { useAnalysisAnnouncement } from "./useAnalysisAnnouncement";
 import { useDelayedFlag } from "./useDelayedFlag";
 import { useLoadMoreSentinel } from "./useLoadMoreSentinel";
 
@@ -25,6 +27,13 @@ const UPDATING_FEEDBACK_DELAY_MS = 200;
 
 const GRID_CLASSES =
   "grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6";
+
+/** One toast slot, so a poll that keeps failing replaces its toast instead of stacking them. */
+const NETWORK_TOAST_ID = "gallery-network-error";
+
+function isNetworkError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "network_error";
+}
 
 function SkeletonTiles({ count }: { count: number }) {
   return Array.from({ length: count }, (_, index) => (
@@ -94,6 +103,13 @@ export function ImageGrid() {
   });
 
   const images = useMemo(() => uniqueById(data?.pages.flatMap((page) => page.items) ?? []), [data]);
+  const announcement = useAnalysisAnnouncement(images);
+
+  // A lost connection shows as a toast too, not only in the error state: a background poll can
+  // fail while the grid still shows older results.
+  useEffect(() => {
+    if (isNetworkError(error)) toast.error(error.message, { id: NETWORK_TOAST_ID });
+  }, [error]);
 
   // A new search starts at the top; otherwise it would open wherever the old results were scrolled.
   const shownQuery = useRef(query);
@@ -151,8 +167,14 @@ export function ImageGrid() {
 
   return (
     <section aria-label="Images" aria-busy={isPlaceholderData || isFetchingNextPage}>
+      {/* Read aloud when an analysis finishes. Hidden visually: the card and modal already show it. */}
+      <p aria-live="polite" aria-atomic="true" className="sr-only">
+        {announcement}
+      </p>
+
+      {/* Sits under the sticky header: two rows on a phone (117 px), one row from `sm` (64 px). */}
       {updating && (
-        <div className="pointer-events-none sticky top-20 z-10 flex h-0 justify-center">
+        <div className="pointer-events-none sticky top-[7.5rem] z-10 flex h-0 justify-center sm:top-20">
           <div
             role="status"
             className="mt-2 flex h-fit items-center gap-2 rounded-full bg-white px-3 py-1.5 text-sm shadow-md dark:bg-zinc-800"
@@ -164,7 +186,11 @@ export function ImageGrid() {
       )}
 
       <ul
-        className={clsx(GRID_CLASSES, "transition-opacity duration-200", updating && "opacity-60")}
+        className={clsx(
+          GRID_CLASSES,
+          "motion-safe:transition-opacity motion-safe:duration-200",
+          updating && "opacity-60",
+        )}
       >
         {images.map((image) => (
           <li key={image.id}>

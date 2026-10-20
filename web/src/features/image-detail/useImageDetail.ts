@@ -23,6 +23,11 @@ export function isNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
 }
 
+/** The request never got an answer: offline, DNS, or the server is down. Status 0 in `ApiError`. */
+export function isNetworkError(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "network_error";
+}
+
 /**
  * The image shown in the modal, with the full-size `original_url`. A 404 isn't retried: a deleted
  * image stays deleted, and the user is waiting on "Image not found".

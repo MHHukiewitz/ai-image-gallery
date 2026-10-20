@@ -284,6 +284,34 @@ describe("ImageModal", () => {
     expect(router.state.location.search).toBe("");
   });
 
+  it("toasts a lost connection, so the failure is not missed", async () => {
+    vi.mocked(getImage).mockRejectedValue(
+      new ApiError(0, "network_error", "Couldn't reach the server. Check your connection."),
+    );
+    renderGallery();
+    const user = userEvent.setup();
+    await openModal(user, "Image details");
+
+    await waitFor(
+      () =>
+        expect(toast.error).toHaveBeenCalledWith(
+          "Couldn't reach the server. Check your connection.",
+          { id: "image-network-error" },
+        ),
+      { timeout: 3000 },
+    );
+  });
+
+  it("does not toast a server error, which the error state already shows", async () => {
+    vi.mocked(getImage).mockRejectedValue(new ApiError(500, "http_500", "Something went wrong."));
+    renderGallery();
+    const user = userEvent.setup();
+    await openModal(user, "Image details");
+
+    await screen.findByRole("heading", { name: "Couldn't load this image" }, { timeout: 3000 });
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it("shows the thumbnail, blurred, until the original has loaded", async () => {
     renderGallery();
     const user = userEvent.setup();
