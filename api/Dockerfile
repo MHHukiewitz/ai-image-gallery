@@ -7,10 +7,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.28 /uv /usr/local/bin/uv
 
 # UV_PYTHON_DOWNLOADS=0 makes uv use the image's Python 3.12 instead of fetching one.
 # The venv lives in /opt/venv so the runtime stage copies a single directory.
+# ORT_DISABLE_TELEMETRY keeps onnxruntime (which loads the embedding model below) from sending usage
+# telemetry.
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    UV_PYTHON_DOWNLOADS=0
+    UV_PYTHON_DOWNLOADS=0 \
+    ORT_DISABLE_TELEMETRY=1
 
 WORKDIR /app
 
@@ -47,7 +50,8 @@ RUN groupadd --system --gid 10001 app \
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    HF_HUB_OFFLINE=1
+    HF_HUB_OFFLINE=1 \
+    ORT_DISABLE_TELEMETRY=1
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/models /opt/models
