@@ -1,0 +1,158 @@
+# Production stack for ops-server (https://gallery.hukiewitz.com). docs/deploy.md is the runbook.
+#
+# Run it from /opt/ai-gallery with the server's .env (scripts/deploy.sh does this):
+#   docker compose -f deploy/compose.prod.yml --env-file .env up -d --build --remove-orphans
+#
+# Traefik (a separate stack on the same host) discovers these containers through the external
+# `sites` network. Nothing here publishes a host port. Never run `docker compose down` in the
+# ops-server project: this file is its own compose project, `ai-gallery`.
+#
+# Values come from /opt/ai-gallery/.env through `${VAR}` interpolation, not `env_file`. Each
+# service then sees only what it needs: the API never receives the Supabase secret key.
+# A `${VAR:-}` with an empty default passes an empty string, which the API's Settings treats as
+# unset (env_ignore_empty), so the default in api/src/gallery/config.py applies.
+
+# The file lives in deploy/, so without this Compose would name the project "deploy".
+name: ai-gallery
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+# The API and the worker share one image. Both services carry the same build section and tag,
+# so `up --build` builds it for the first and reuses the layers for the second.
+x-backend: &backend
+  build:
+    context: ../api
+  image: ai-gallery-api:${RELEASE:-prod}
+  restart: unless-stopped
+  logging: *logging
+
+x-backend-env: &backend-env
+  SUPABASE_URL: ${SUPABASE_URL:?set SUPABASE_URL in the server .env}
+  SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:?set SUPABASE_PUBLISHABLE_KEY in the server .env}
+  # SUPABASE_JWT_SECRET is deliberately not passed. Production signs tokens with ES256, so the
+  # API verifies them against the project's JWKS and refuses HS256 tokens.
+  SUPABASE_JWKS_URL: ${SUPABASE_JWKS_URL:-}
+  STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+  MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-}
+  MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # Empty DSN: Sentry stays off and nothing leaves the container.
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: production
+  SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-}
+  # The deploy script exports the git SHA. The same value tags the web bundle below.
+  RELEASE: ${RELEASE:-}
+
+services:
+  api:
+    <<: *backend
+    mem_limit: 256m
+    environment:
+      <<: *backend-env
+      SIGNED_URL_TTL_SECONDS: ${SIGNED_URL_TTL_SECONDS:-}
+    healthcheck:
+      # urllib instead of curl, because the image has no curl. start_interval probes quickly
+      # while the container starts, so Traefik (which routes only to healthy containers) picks
+      # it up within seconds instead of after the first 30 s interval.
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+    networks:
+      - default
+      - sites
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=sites
+      - traefik.http.routers.gallery-api.rule=Host(`gallery.hukiewitz.com`) && PathPrefix(`/api`)
+      # Wins over the web router, whose rule is shorter and so has a lower default priority.
+      - traefik.http.routers.gallery-api.priority=100
+      - traefik.http.routers.gallery-api.entrypoints=web,websecure
+      - traefik.http.routers.gallery-api.tls.certresolver=le
+      - traefik.http.routers.gallery-api.middlewares=security-headers@file
+      - traefik.http.services.gallery-api.loadbalancer.server.port=8000
+
+  # Same image as the API. The command starts the analysis loop instead of uvicorn.
+  worker:
+    <<: *backend
+    command: ["python", "-m", "gallery.worker"]
+    mem_limit: 512m
+    environment:
+      <<: *backend-env
+      # Only the worker holds the key that bypasses RLS.
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:?set SUPABASE_SECRET_KEY in the server .env}
+      # The setting's default is `fake`, so production states its own default here. Setting
+      # ANALYZER in .env switches provider without a code change.
+      ANALYZER: ${ANALYZER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_EFFORT: ${AI_EFFORT:-}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-}
+      # Only read when ANALYZER=openai_compat.
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-}
+      WORKER_POLL_MIN_SECONDS: ${WORKER_POLL_MIN_SECONDS:-}
+      WORKER_POLL_MAX_SECONDS: ${WORKER_POLL_MAX_SECONDS:-}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-}
+      JOB_STALE_AFTER_SECONDS: ${JOB_STALE_AFTER_SECONDS:-}
+    # The worker serves no HTTP, so the image's HEALTHCHECK has nothing to probe. A crash is
+    # covered by the restart policy. A wedged loop shows up as silence in the logs.
+    healthcheck:
+      disable: true
+    networks:
+      - default
+
+  web:
+    build:
+      context: ../web
+      # Vite inlines these into the bundle at build time. Every one is public by design.
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:?set VITE_SUPABASE_URL in the server .env}
+        VITE_SUPABASE_PUBLISHABLE_KEY: ${VITE_SUPABASE_PUBLISHABLE_KEY:?set VITE_SUPABASE_PUBLISHABLE_KEY in the server .env}
+        VITE_MAX_UPLOAD_MB: ${VITE_MAX_UPLOAD_MB:-10}
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+        VITE_RELEASE: ${RELEASE:-}
+        # Fixed for production. A stray value in .env must not ship mocks or a wrong API path.
+        VITE_API_BASE: /api
+        VITE_USE_MOCKS: "false"
+        VITE_SENTRY_ENVIRONMENT: production
+    image: ai-gallery-web:${RELEASE:-prod}
+    restart: unless-stopped
+    mem_limit: 64m
+    logging: *logging
+    healthcheck:
+      # The nginx image ships busybox wget. 127.0.0.1, not localhost: nginx listens on IPv4 only.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 2s
+    networks:
+      - sites
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=sites
+      - traefik.http.routers.gallery-web.rule=Host(`gallery.hukiewitz.com`)
+      - traefik.http.routers.gallery-web.entrypoints=web,websecure
+      - traefik.http.routers.gallery-web.tls.certresolver=le
+      - traefik.http.routers.gallery-web.middlewares=security-headers@file
+      # nginx runs non-root, so it listens on 8080, not 80 (see web/Dockerfile).
+      - traefik.http.services.gallery-web.loadbalancer.server.port=8080
+
+networks:
+  # Created by the ops-server stack. Traefik watches it. Compose only attaches to it.
+  sites:
+    external: true
+    name: sites
