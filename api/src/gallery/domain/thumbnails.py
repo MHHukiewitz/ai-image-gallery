@@ -18,6 +18,11 @@ def make_thumbnail(data: bytes, size: int = THUMBNAIL_SIZE) -> bytes:
     """
     try:
         with Image.open(BytesIO(data)) as opened:
+            # A 12 MP photo is 36 MB of pixels, and the work below makes two more copies. For a
+            # JPEG, libjpeg can decode at 1/2, 1/4 or 1/8 scale, but only if asked before the pixels
+            # load. Twice the target keeps the resize sharp. PNG has no such shortcut: draft is a
+            # no-op there.
+            opened.draft("RGB", (2 * size, 2 * size))
             # Cameras store rotation in EXIF, not in the pixels, so turn the picture upright first.
             upright = _to_8_bit(ImageOps.exif_transpose(opened))
             # Resize before flattening: the work then happens on 300 x 300 pixels, not on the
