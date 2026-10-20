@@ -29,6 +29,7 @@ The grading weights are: core functionality 35%, code quality 25%, UI/UX 20%, AI
 | D9 | An **AI result cache** keyed by `(content_sha256, analyzer_id)`. | Re-uploads and re-analysis with the same model cost nothing. Changing the prompt version invalidates the cache. |
 | D10 | **React + Vite + TypeScript + Tailwind + TanStack Query**, served as a static SPA by nginx. | This matches the challenge stack and is cheap to host. TanStack Query handles caching, pagination and polling. |
 | D11 | **Same-origin deploy:** Traefik routes `gallery.hukiewitz.com` to web and `…/api` to FastAPI. | No CORS, and the existing ACME and `security-headers@file` middleware are reused. |
+| D12 | **Observability is structured JSON logs plus Sentry** (errors only, EU region, no replay, scrubbed). Sentry sends nothing without a DSN. **No Dagster, MLOps platform or product analytics.** | Per-image jobs don't fit a batch orchestrator, and the DB queue already handles retries. Sentry catches what logs miss. Replay would record users' private photos, and PostHog would add GDPR consent work without earning points. |
 
 ## 3. System view
 
@@ -217,6 +218,8 @@ The prompt is versioned (`PROMPT_VERSION`), and `analyzer_id = f"{provider}:{mod
 
 **Normalization.** Tags are trimmed, lowercased and deduplicated, then clamped to 10. If fewer than 5 come back, the adapter retries once.
 
+**Usage.** Each analysis returns `usage`: provider latency, input and output tokens, and the provider-reported cost. The worker logs it once per job, which makes the worker log our cost dashboard. The benchmark (#6) reads the same field.
+
 **Cost control.** The image is downscaled to a 1024 px long side as JPEG q85 before sending. This uses Everlast's `normalize_image` pattern. Colors never cost tokens.
 
 **Provider choice.** Ticket #6 decides it with a measured benchmark, which is the deliverable for the 15% research item. It runs 20 fixture images through at least 3 candidates via the existing OpenRouter key and records cost per 1k images, p50/p95 latency, JSON validity rate and a 1–5 quality score. The doc compares those results against classic vision APIs and self-hosting:
@@ -249,6 +252,7 @@ ai-image-gallery/
 │     ├─ main.py                app factory (python -m uvicorn gallery.main:app)
 │     ├─ worker.py              worker entrypoint (python -m gallery.worker)
 │     ├─ config.py              pydantic-settings, one Settings class
+│     ├─ observability.py       JSON logging + Sentry init (the only sentry_sdk import)
 │     ├─ api/                   HTTP only: routes/, deps.py (auth), schemas.py, errors.py
 │     ├─ services/              use cases: uploads.py, analysis.py, gallery.py
 │     ├─ domain/                pure, no I/O: models.py, colors.py, thumbnails.py, validation.py
@@ -258,7 +262,8 @@ ai-image-gallery/
 ├─ web/                         React · Vite · TS · Tailwind · TanStack Query
 │  └─ src/
 │     ├─ app/                   router, providers, layout
-│     ├─ lib/                   supabase.ts (auth only), api.ts (fetch + XHR upload), api-types.ts (generated)
+│     ├─ lib/                   supabase.ts (auth only), api.ts (fetch + XHR upload), api-types.ts (generated),
+│     │                         observability.tsx (Sentry init + error boundary; the only @sentry/react import)
 │     ├─ features/              auth/ gallery/ upload/ search/ image-detail/
 │     ├─ components/ui/         Button, Input, Skeleton, Dialog, Toast …
 │     └─ mocks/                 MSW handlers from contract fixtures (web dev without backend)
@@ -300,6 +305,24 @@ ai-image-gallery/
 | End to end | sign up → upload 2 → analyzed → text, similar and color search → logout | Playwright against the local stack with `FakeAnalyzer` |
 | CI | ruff, pytest, tsc, eslint, vitest, docker build, gitleaks. A Supabase integration job runs via `supabase/setup-cli`. | GitHub Actions |
 
+### Observability
+
+| Concern | Approach |
+|---|---|
+| **Logs** | One JSON object per line on stdout from the API and the worker. `docker compose logs` is enough. The worker writes one line per job with the outcome, latency, cache hit, tokens and `cost_usd`. |
+| **Errors** | Sentry, in the EU region and free tier. There's one Python project, with the API and worker told apart by a `component` tag, and one React project. |
+| **How errors reach Sentry** | Through log levels. Sentry's logging integration sends `ERROR` and above, so only `observability.py` and `lib/observability.tsx` import Sentry. |
+| **Privacy** | `send_default_pii` is off. Request bodies are never sent (`max_request_body_size="never"`), so upload bytes stay out. The `Authorization` and `Cookie` headers are dropped, and `token=` values in signed image URLs are redacted. There's no session replay and no tracing. |
+| **Uptime** | Uptime Kuma (already on ops-server) checks `/api/health?deep=1`. |
+
+**Deliberately not used:**
+- **Dagster or another orchestrator:** per-image, latency-sensitive jobs don't fit a batch orchestrator, and re-analyzing everything is one `update … set status = 'pending'`.
+- **MLflow / W&B:** we train nothing, and `analyzer_id` on each row plus the benchmark record which model and prompt produced what.
+- **Langfuse:** its traces would carry users' photos.
+- **PostHog:** it needs GDPR consent and adds no value for grading.
+
+**GlitchTip** can replace Sentry by swapping the DSN.
+
 ## 12. Reuse from Everlast-NotebookLLM
 
 That project's stack is Next.js + FastAPI + SQLAlchemy/pgvector + arq/Redis + its own bcrypt sessions + litellm + Caddy. **We don't fork it.** Supabase replaces its auth, DB and storage layers, and the challenge stack differs everywhere else. Adapting it would cost more than writing fresh.
@@ -332,4 +355,5 @@ The ticket breakdown, dependencies, agent models and the critical-path diagram l
 | Supabase | Supabase Cloud, free tier, EU (Frankfurt). Local dev uses `supabase start`. |
 | Email confirmation | **Off**, so reviewers can sign up instantly. This is documented in the README. Resend SMTP can be added later. |
 | Repo | `MHHukiewitz/ai-image-gallery`, **public**. The local checkout is `~/Workspace/ai-image-gallery`. |
+| Observability | JSON logs and Sentry for errors, using Sentry's EU region (optional, with #30). No Dagster, MLOps platform, Langfuse or PostHog. |
 | Jev (TypeSafe) | Not in the pipeline. It's typed-answer only and image input is experimental. It's listed as a rejected option in the research doc. |

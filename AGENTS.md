@@ -31,6 +31,7 @@ These rules apply to every ticket. If your issue contradicts them, follow the is
 - `app/` is the only place that composes features: router, layout and the gallery route.
 - Shared code lives in `lib/` (API client, query keys, gallery URL state, the Supabase auth client) and `components/ui/` (primitives).
 - Only `lib/supabase.ts` and `features/auth/` may import `@supabase/supabase-js`. All data goes through `lib/api.ts`.
+- Only `lib/observability.tsx` imports `@sentry/react`. On the API side, only `observability.py` imports `sentry_sdk`.
 
 ## Code style
 
@@ -38,7 +39,8 @@ These rules apply to every ticket. If your issue contradicts them, follow the is
   - Use 3.12 with type hints on every function.
   - Run `ruff format` and `ruff check` before committing.
   - Use dataclasses or Pydantic, not dicts, across layer boundaries.
-  - Log with `logging.getLogger(__name__)`. No `print`.
+  - Log with `logging.getLogger(__name__)`. Put structured fields in `extra={...}`. No `print`.
+  - Log levels matter: `ERROR` and above reach Sentry. Use `logger.exception` for bugs, `warning` for retryable conditions, and `info` for user mistakes.
 - **TypeScript:**
   - `strict` mode, no `any`, function components, named exports.
   - Style with Tailwind utility classes. The only CSS file is `src/index.css`.

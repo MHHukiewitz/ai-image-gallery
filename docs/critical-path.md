@@ -15,6 +15,7 @@ flowchart LR
     T26["#26 Supabase project"]:::human
     T27["#27 DNS record"]:::human
     T28["#28 AI key + bench photos"]:::human
+    T30["#30 Sentry project (optional)"]:::human
   end
   subgraph W1["Wave 1"]
     T1["#1 Scaffold + pinned deps"]:::sonnet
@@ -81,6 +82,7 @@ flowchart LR
   T15 & T17 & T18 --> T20
   T21 --> T22 & T24
   T26 & T27 --> T22
+  T30 -. optional .-> T22
   T8 & T11 & T13 & T23 --> T24
   T6 & T22 --> T25
 
@@ -93,7 +95,7 @@ flowchart LR
 
 - **The critical path has 8 tickets:** `#1 → #2 → #14 → #16 → #19 → #20 → #24 → #25`. It runs through the frontend, so **#2 (contracts) and #14 (web shell + MSW mocks) are the most important early merges.** After them, the web side never waits on the backend.
 - **The near-critical backend chain** is `#1 → #3 → #7 → #12 → #13 → #24`, with one wave of slack. Keep #3 and #7 moving.
-- **The human tasks only gate #22 (deploy) and #6 (benchmark).** Local development runs on `supabase start` and `FakeAnalyzer`.
+- **The human tasks only gate #22 (deploy) and #6 (benchmark).** #30 (Sentry) is optional and blocks nothing. Local development runs on `supabase start` and `FakeAnalyzer`.
 - **Waves** are earliest-start groups. At most 7 tickets run in parallel (wave 4).
 
 ## How the orchestrator steers the swarm
@@ -111,6 +113,6 @@ flowchart LR
 | **Opus** | Security-critical work where a subtle mistake leaks tenant data | #3 |
 | **Sonnet** | Feature work across several files that needs some judgment or tricky library integration | #1, #4, #5, #6, #7, #8, #9, #11, #14, #16, #17, #19, #22, #24 |
 | **Haiku** | Fully specified, mechanical work with a small blast radius | #2, #10, #12, #13, #15, #18, #20, #21, #23, #25 |
-| **Mike** | Accounts, DNS and secrets, which agents must not handle | #26, #27, #28 |
+| **Mike** | Accounts, DNS and secrets, which agents must not handle | #26, #27, #28, #30 (optional) |
 
 Each issue states its own model and rationale. This table is the summary.
