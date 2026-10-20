@@ -18,6 +18,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Reports which optional inputs exist. The jobs below read these outputs in their `if:`, so a
+  # job whose inputs are missing is skipped as a whole, not run and failed.
+  detect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      contract: ${{ steps.inputs.outputs.contract }}
+      pgtap: ${{ steps.inputs.outputs.pgtap }}
+      api_integration: ${{ steps.inputs.outputs.api_integration }}
+      docker: ${{ steps.inputs.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: inputs
+        name: Check which optional inputs exist
+        shell: bash
+        run: |
+          {
+            echo "contract=$(test -f scripts/gen-api-types.sh && echo true || echo false)"
+            echo "pgtap=$(compgen -G 'supabase/tests/*.sql' > /dev/null && echo true || echo false)"
+            echo "api_integration=$(grep -rqs 'pytest.mark.integration' api/tests && echo true || echo false)"
+            echo "docker=$(test -f api/Dockerfile && test -f web/Dockerfile && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+
   api:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -70,3 +93,31 @@ jobs:
       - name: Build
         working-directory: web
         run: npm run build
+
+  contract:
+    needs: detect
+    if: needs.detect.outputs.contract == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: api/uv.lock
+      - name: Install API dependencies
+        working-directory: api
+        run: uv sync --frozen
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Regenerate API types
+        run: make types
+      # Fails when the committed types no longer match the API's schemas.
+      - name: Check for drift
+        run: git diff --exit-code -- web/src/lib/api-types.ts
