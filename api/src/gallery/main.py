@@ -26,6 +26,8 @@ def create_app() -> FastAPI:
         title="AI Image Gallery API",
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
+        # The handler below returns this shape for every 422, so document it on every route.
+        responses={422: {"model": ErrorResponse, "description": "Invalid request."}},
     )
     app.include_router(health.router)
     app.include_router(uploads.router)
