@@ -23,6 +23,7 @@ MEGABYTE = 1024 * 1024
 class InMemoryObjectStore:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
+        self.fail_signing = False
 
     async def put(self, path: str, data: bytes, content_type: str) -> None:
         self.objects[path] = data
@@ -35,6 +36,8 @@ class InMemoryObjectStore:
             self.objects.pop(path, None)
 
     async def signed_urls(self, paths: Sequence[str], ttl_seconds: int) -> dict[str, str]:
+        if self.fail_signing:
+            raise ConnectionError("storage is saturated")
         return {path: f"https://storage.test/{path}?token=abc" for path in paths}
 
 
@@ -148,6 +151,20 @@ def test_an_upload_answers_201_with_the_image_in_the_api_shape(client: TestClien
         "colors": [],
         "error": None,
     }
+
+
+def test_an_upload_whose_thumbnail_cannot_be_signed_is_still_a_201(
+    client: TestClient, repo: InMemoryImageRepo, store: InMemoryObjectStore
+) -> None:
+    store.fail_signing = True
+
+    response = post_file(client, a_jpeg())
+
+    assert response.status_code == 201
+    assert response.json()["id"] == 42
+    assert response.json()["thumbnail_url"] == ""
+    assert len(repo.inserted) == 1
+    assert len(store.objects) == 2
 
 
 def test_a_png_upload_is_accepted(client: TestClient) -> None:
