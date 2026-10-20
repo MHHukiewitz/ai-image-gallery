@@ -5,6 +5,8 @@ import { FOCUS_COLOR, FOCUS_RING } from "../../components/ui/focusRing";
 import { Spinner } from "../../components/ui/Spinner";
 import type { ImageOut } from "../../lib/api";
 import { useSelectedImage } from "../../lib/galleryQuery";
+import { ThumbnailPlaceholder } from "./ThumbnailPlaceholder";
+import { useThumbnailSource } from "./useThumbnailSource";
 
 const TAGS_ON_HOVER = 3;
 
@@ -18,10 +20,8 @@ export function ImageCard({ image }: ImageCardProps) {
   const { status, tags, description } = image.analysis;
   const analyzing = status === "pending" || status === "processing";
 
-  // Every list refetch signs the thumbnails again, so the URL changes while the file doesn't.
-  // Following it would reload every thumbnail on each poll; keep the first URL and switch to
-  // the current one only if the first no longer loads (a signed URL expires after an hour).
-  const [src, setSrc] = useState(image.thumbnail_url);
+  // Keeps the first URL, and shows a placeholder while there is none (see the hook).
+  const { src, showPlaceholder, onError } = useThumbnailSource(image.thumbnail_url);
   const [loaded, setLoaded] = useState(false);
 
   return (
@@ -34,13 +34,14 @@ export function ImageCard({ image }: ImageCardProps) {
         FOCUS_COLOR,
       )}
     >
+      {showPlaceholder && <ThumbnailPlaceholder />}
       <img
         src={src}
         alt={description || image.filename}
         loading="lazy"
         decoding="async"
         onLoad={() => setLoaded(true)}
-        onError={() => setSrc(image.thumbnail_url)}
+        onError={onError}
         className={clsx(
           "absolute inset-0 size-full object-cover motion-safe:transition-[opacity,transform] motion-safe:duration-300",
           loaded ? "opacity-100" : "opacity-0",
