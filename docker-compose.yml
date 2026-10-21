@@ -44,7 +44,7 @@ services:
       <<: *backend-env
       SIGNED_URL_TTL_SECONDS: ${SIGNED_URL_TTL_SECONDS:-}
       UPLOAD_DAILY_QUOTA: ${UPLOAD_DAILY_QUOTA:-}
-      UPLOAD_QUOTA_EXEMPT_EMAILS: ${UPLOAD_QUOTA_EXEMPT_EMAILS:-}
+      UPLOAD_QUOTA_EXEMPT_USER_IDS: ${UPLOAD_QUOTA_EXEMPT_USER_IDS:-}
       # Not in production's list yet. Kept here so a value set in .env still reaches the API.
       UPLOAD_PROCESSING_CONCURRENCY: ${UPLOAD_PROCESSING_CONCURRENCY:-}
 
