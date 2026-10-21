@@ -24,6 +24,7 @@ from uuid import UUID
 import httpx
 import pytest
 from PIL import Image
+from PIL.ExifTags import Base
 
 from gallery.api import deps
 from gallery.config import Settings
@@ -192,6 +193,77 @@ async def test_a_second_upload_of_the_same_file_bumps_it_and_stores_nothing_new(
     finally:
         for owner, image_id in uploaded:
             await api.delete(f"/api/v1/images/{image_id}", headers=owner.headers)
+
+
+def a_phone_jpeg(make: str) -> bytes:
+    """A JPEG with camera EXIF. Another `make` gives the same picture with other metadata."""
+    exif = Image.Exif()
+    exif[Base.Orientation] = 6
+    exif[Base.Make] = make
+    buffer = BytesIO()
+    Image.new("RGB", (64, 48), "goldenrod").save(buffer, format="JPEG", exif=exif)
+    return buffer.getvalue()
+
+
+async def download_original(api: httpx.AsyncClient, tenant: Tenant, image_id: int) -> bytes:
+    """The stored original, fetched the way the modal's download does: through its signed URL."""
+    detail = await api.get(f"/api/v1/images/{image_id}", headers=tenant.headers)
+    assert detail.status_code == 200
+    original_url = detail.json()["original_url"]
+    assert original_url
+    async with httpx.AsyncClient(timeout=30) as storage:
+        response = await storage.get(original_url)
+    response.raise_for_status()
+    return response.content
+
+
+async def test_the_same_picture_is_a_duplicate_whatever_its_metadata(
+    api: httpx.AsyncClient, alice_and_bob: tuple[Tenant, Tenant]
+) -> None:
+    alice, bob = alice_and_bob
+    photo = a_phone_jpeg("TestCam")
+    uploaded: list[tuple[Tenant, int]] = []
+    try:
+        first = await upload_jpeg(api, alice, photo, "photo.jpg")
+        assert first.status_code == 201
+        photo_id = first.json()["id"]
+        uploaded.append((alice, photo_id))
+
+        # The stored original has lost its camera tag, so its bytes, and hash, differ.
+        downloaded = await download_original(api, alice, photo_id)
+        assert sha256_of(downloaded) != sha256_of(photo)
+
+        # The browser's pre-upload lookup finds the downloaded file by the stored hash...
+        assert await lookup(api, alice, downloaded) == {sha256_of(downloaded): photo_id}
+        # ...and so does the upload itself, if the lookup was skipped.
+        again = await upload_jpeg(api, alice, downloaded, "downloaded.jpg")
+        assert again.status_code == 200
+        assert again.json()["id"] == photo_id
+
+        # The same picture with another camera tag strips to the same bytes.
+        retagged = await upload_jpeg(api, alice, a_phone_jpeg("OtherCam"), "retagged.jpg")
+        assert retagged.status_code == 200
+        assert retagged.json()["id"] == photo_id
+        assert await gallery_ids(api, alice) == [photo_id]
+
+        # Another user's matching file is a new image of their own.
+        bobs = await upload_jpeg(api, bob, downloaded, "downloaded.jpg")
+        assert bobs.status_code == 201
+        uploaded.append((bob, bobs.json()["id"]))
+        assert bobs.json()["id"] != photo_id
+    finally:
+        for owner, image_id in uploaded:
+            await api.delete(f"/api/v1/images/{image_id}", headers=owner.headers)
+
+
+async def upload_jpeg(
+    api: httpx.AsyncClient, tenant: Tenant, data: bytes, filename: str
+) -> httpx.Response:
+    return await api.post(
+        "/api/v1/images",
+        headers=tenant.headers,
+        files={"file": (filename, data, "image/jpeg")},
+    )
 
 
 async def test_the_bump_route_moves_an_image_up_and_only_for_its_owner(
