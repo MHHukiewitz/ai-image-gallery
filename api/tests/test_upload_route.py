@@ -11,9 +11,10 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from gallery.api import deps
+from gallery.api.body_limit import MULTIPART_ALLOWANCE_BYTES
 from gallery.api.deps import CurrentUser
 from gallery.api.routes import uploads
-from gallery.config import Settings
+from gallery.config import Settings, get_settings
 from gallery.domain.errors import QuotaExceededError
 from gallery.domain.models import AnalysisStatus, ImageRecord, NewImage
 
@@ -353,10 +354,167 @@ def test_an_upload_without_a_valid_token_is_a_401_and_stores_nothing(
     assert repo.inserted == []
 
 
+def test_a_text_field_named_file_is_a_422(client: TestClient) -> None:
+    response = client.post(URL, data={"file": "not a file"})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+# --- the body is checked before it is read ----------------------------------------------------
+
+
+class StreamingClient:
+    """Sends a request body to the app in chunks, at the ASGI level, and collects the answer.
+
+    TestClient reads the whole body before it calls the app. This shows how much of it the app
+    actually read, and can leave out Content-Length like a chunked upload does.
+    """
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = chunks
+        self.chunks_read = 0
+        self.status: int | None = None
+        self.body = b""
+
+    async def post(
+        self, app: FastAPI, *, content_length: int | None, token: str | None = None
+    ) -> None:
+        headers = [(b"content-type", b"multipart/form-data; boundary=boundary")]
+        if content_length is not None:
+            headers.append((b"content-length", str(content_length).encode()))
+        if token is not None:
+            headers.append((b"authorization", f"Bearer {token}".encode()))
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": URL,
+            "raw_path": URL.encode(),
+            "root_path": "",
+            "query_string": b"",
+            "headers": headers,
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+        }
+        await app(scope, self.receive, self.send)
+
+    async def receive(self) -> dict[str, Any]:
+        if self.chunks_read == len(self.chunks):
+            return {"type": "http.disconnect"}
+        self.chunks_read += 1
+        return {
+            "type": "http.request",
+            "body": self.chunks[self.chunks_read - 1],
+            "more_body": self.chunks_read < len(self.chunks),
+        }
+
+    async def send(self, message: dict[str, Any]) -> None:
+        if message["type"] == "http.response.start":
+            self.status = message["status"]
+        else:
+            self.body += message.get("body", b"")
+
+
+def multipart_chunks(file_size: int, chunk_size: int = 64 * 1024) -> list[bytes]:
+    """A multipart body with one `file` part of `file_size` bytes, in chunks."""
+    head = (
+        b"--boundary\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="big.jpg"\r\n'
+        b"Content-Type: image/jpeg\r\n\r\n"
+    )
+    body = head + b"\0" * file_size + b"\r\n--boundary--\r\n"
+    return [body[i : i + chunk_size] for i in range(0, len(body), chunk_size)]
+
+
+@pytest.fixture
+def one_megabyte_body_limit(monkeypatch: pytest.MonkeyPatch) -> int:
+    """Set MAX_UPLOAD_MB=1 where the body limit reads it, and return that limit in bytes."""
+    monkeypatch.setenv("MAX_UPLOAD_MB", "1")
+    get_settings.cache_clear()
+    return MEGABYTE + MULTIPART_ALLOWANCE_BYTES
+
+
+@pytest.mark.parametrize("token", [None, "not-a-token"])
+async def test_an_upload_without_a_valid_token_is_refused_before_its_body_is_read(
+    make_app: Callable[..., FastAPI], token: str | None
+) -> None:
+    chunks = multipart_chunks(5 * MEGABYTE)
+    client = StreamingClient(chunks)
+
+    await client.post(make_app(signed_in=False), content_length=sum(map(len, chunks)), token=token)
+
+    assert client.status == 401
+    assert client.chunks_read == 0
+
+
+def test_a_body_over_the_limit_is_a_413_and_the_route_never_runs(
+    make_app: Callable[..., FastAPI], one_megabyte_body_limit: int
+) -> None:
+    service_built: list[bool] = []
+    app = make_app()
+    app.dependency_overrides[uploads.get_upload_service] = lambda: service_built.append(True)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        URL,
+        content=b"\0" * (one_megabyte_body_limit + 1),
+        headers={"Content-Type": "multipart/form-data; boundary=boundary"},
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {
+        "error": {"code": "too_large", "message": "The file is larger than 1 MB."}
+    }
+    assert service_built == []
+
+
+async def test_a_chunked_body_over_the_limit_is_cut_off_with_a_413(
+    make_app: Callable[..., FastAPI], one_megabyte_body_limit: int
+) -> None:
+    spy = SpyService()
+    app = make_app()
+    app.dependency_overrides[uploads.get_upload_service] = lambda: spy
+    chunks = multipart_chunks(20 * MEGABYTE)
+    client = StreamingClient(chunks)
+
+    await client.post(app, content_length=None)
+
+    assert client.status == 413
+    assert client.body == (
+        b'{"error":{"code":"too_large","message":"The file is larger than 1 MB."}}'
+    )
+    assert spy.received == []
+    assert client.chunks_read < len(chunks) // 10
+
+
+async def test_a_chunked_upload_within_the_limit_is_accepted(
+    make_app: Callable[..., FastAPI], repo: InMemoryImageRepo
+) -> None:
+    jpeg = a_jpeg()
+    body = (
+        b"--boundary\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="beach.jpg"\r\n'
+        b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n--boundary--\r\n"
+    )
+    client = StreamingClient([body[i : i + 1000] for i in range(0, len(body), 1000)])
+
+    await client.post(make_app(), content_length=None)
+
+    assert client.status == 201
+    assert [image.size_bytes for image in repo.inserted] == [len(jpeg)]
+
+
 def test_the_upload_is_documented_in_the_openapi_schema(client: TestClient) -> None:
-    operation = client.get("/api/openapi.json").json()["paths"][URL]["post"]
+    schema = client.get("/api/openapi.json").json()
+    operation = schema["paths"][URL]["post"]
 
     assert set(operation["responses"]) >= {"200", "201", "413", "415", "422"}
+    form = operation["requestBody"]["content"]["multipart/form-data"]["schema"]
+    name = form["$ref"].removeprefix("#/components/schemas/")
+    assert schema["components"]["schemas"][name]["required"] == ["file"]
     for status in ("200", "201"):
         schema = operation["responses"][status]["content"]["application/json"]["schema"]
         assert schema == {"$ref": "#/components/schemas/ImageOut"}

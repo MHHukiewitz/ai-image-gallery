@@ -1,8 +1,10 @@
 """Upload routes: one image per request, plus the duplicate lookup and the bumps."""
 
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Response, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
+from starlette.datastructures import UploadFile
 
 from gallery.api.deps import (
     CurrentUser,
@@ -25,6 +27,44 @@ from gallery.ports import ImageRepo, ObjectStore
 from gallery.services.uploads import UploadService
 
 router = APIRouter()
+
+# upload_image parses its form itself, so FastAPI no longer derives the request body from its
+# signature. This documents the body exactly as FastAPI did for `file: UploadFile`, which keeps
+# the OpenAPI schema, and the web types generated from it, unchanged.
+_UPLOAD_FORM_SCHEMA_NAME = "Body_upload_image_api_v1_images_post"
+_UPLOAD_FORM_SCHEMA: dict[str, Any] = {
+    "properties": {
+        "file": {"type": "string", "contentMediaType": "application/octet-stream", "title": "File"}
+    },
+    "type": "object",
+    "required": ["file"],
+    "title": _UPLOAD_FORM_SCHEMA_NAME,
+}
+_UPLOAD_REQUEST_BODY: dict[str, Any] = {
+    "required": True,
+    "content": {
+        "multipart/form-data": {
+            "schema": {"$ref": f"#/components/schemas/{_UPLOAD_FORM_SCHEMA_NAME}"}
+        }
+    },
+}
+
+
+def document_upload_form(app: FastAPI) -> None:
+    """Add the upload's form to the app's OpenAPI components, where its request body points."""
+    generate_openapi = app.openapi
+
+    def openapi() -> dict[str, Any]:
+        if app.openapi_schema is None:
+            schema = generate_openapi()
+            schemas = schema.setdefault("components", {}).setdefault("schemas", {})
+            schemas[_UPLOAD_FORM_SCHEMA_NAME] = _UPLOAD_FORM_SCHEMA
+            # FastAPI sorts the components by name. Keep that order, so the generated types
+            # don't move.
+            schema["components"]["schemas"] = dict(sorted(schemas.items()))
+        return app.openapi_schema
+
+    app.openapi = openapi
 
 
 def get_upload_service(
@@ -58,21 +98,39 @@ def get_upload_service(
         413: {"model": ErrorResponse, "description": "The file is larger than MAX_UPLOAD_MB."},
         415: {"model": ErrorResponse, "description": "The file is not a JPEG or PNG."},
     },
+    openapi_extra={"requestBody": _UPLOAD_REQUEST_BODY},
 )
 async def upload_image(
-    file: UploadFile,
+    request: Request,
     response: Response,
     user: Annotated[CurrentUser, Depends(get_current_user)],
     service: Annotated[UploadService, Depends(get_upload_service)],
 ) -> ImageOut:
     """Store an image (201), or bump the caller's existing copy of it to the top (200)."""
-    # One byte more than the limit is enough for the service to see the file is too large, and
-    # it keeps a huge upload from being read into memory.
-    data = await file.read(service.max_bytes + 1)
-    result = await service.upload(user.id, file.filename, data)
+    # The form is parsed here rather than declared as a parameter: FastAPI parses a declared
+    # body before it runs any dependency, so the token would only be checked after the file had
+    # been spooled to disk.
+    async with request.form() as form:
+        file = form.get("file")
+        if not isinstance(file, UploadFile):
+            raise _file_part_error(file)
+        # One byte more than the limit is enough for the service to see the file is too large,
+        # and it keeps a huge upload from being read into memory.
+        data = await file.read(service.max_bytes + 1)
+        filename = file.filename
+    result = await service.upload(user.id, filename, data)
     if not result.created:
         response.status_code = 200
     return to_image_out(result.record, thumbnail_url=result.thumbnail_url)
+
+
+def _file_part_error(value: str | None) -> RequestValidationError:
+    """Describe a missing or non-file `file` part the way FastAPI's own validation would."""
+    if value is None:
+        error = {"type": "missing", "loc": ("body", "file"), "msg": "Field required"}
+    else:
+        error = {"type": "value_error", "loc": ("body", "file"), "msg": "Expected a file."}
+    return RequestValidationError([error])
 
 
 # These two don't need the user's id, but naming the dependency keeps the 401 from depending on
