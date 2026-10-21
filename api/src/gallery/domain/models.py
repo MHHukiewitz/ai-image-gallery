@@ -113,6 +113,10 @@ class AnalysisTarget:
 
     image_id: int
     original_path: str
+    # The hash of the file as uploaded. The API strips metadata from the stored original (#85), so
+    # this often differs from the digest of the stored bytes, and a signed-in user can write it
+    # through PostgREST, so it can be forged. Use it for logging only: anything security-relevant,
+    # like the shared AI cache key, must hash the downloaded bytes instead.
     content_sha256: str
     status: AnalysisStatus
     error: str | None
