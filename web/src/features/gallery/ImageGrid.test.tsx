@@ -8,6 +8,7 @@ import { toast } from "../../components/ui/toast";
 import type { ImageOut, ImagePage } from "../../lib/api";
 import { ApiError, listImages, PAGE_SIZE } from "../../lib/api";
 import { queryKeys } from "../../lib/queryKeys";
+import { RealtimeLiveContext } from "../../lib/realtimeStatus";
 import { MockStore } from "../../mocks/data";
 import { ImageGrid } from "./ImageGrid";
 import { FakeIntersectionObserver, makeImage } from "./testFixtures";
@@ -43,7 +44,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function renderGrid(path = "/") {
+function renderGrid(path = "/", realtimeLive = false) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
   });
@@ -52,7 +53,9 @@ function renderGrid(path = "/") {
   });
   render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <RealtimeLiveContext value={realtimeLive}>
+        <RouterProvider router={router} />
+      </RealtimeLiveContext>
     </QueryClientProvider>,
   );
   return { router, queryClient };
@@ -418,6 +421,19 @@ describe("polling", () => {
 
     expect(screen.queryByText("Analyzing…")).not.toBeInTheDocument();
     expect(mockListImages).toHaveBeenCalledTimes(2);
+  }, 8000);
+
+  it("waits well past the 3 second pace while the Realtime channel is live", async () => {
+    mockListImages.mockResolvedValue(
+      pageOf([makeImage(1, { status: "processing", tags: [], description: null })], 0),
+    );
+
+    renderGrid("/", true);
+    expect(await screen.findByText("Analyzing…")).toBeInTheDocument();
+
+    await new Promise((resolve) => setTimeout(resolve, 3400));
+
+    expect(mockListImages).toHaveBeenCalledTimes(1);
   }, 8000);
 
   it("makes no further requests once everything is analyzed", async () => {

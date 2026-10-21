@@ -9,6 +9,7 @@ import { ApiError, deleteImage, getImage, listImages, reanalyzeImage } from "../
 import type { AnalysisOut, ImageOut } from "../../lib/api";
 import { useSelectedImage } from "../../lib/galleryQuery";
 import { queryKeys } from "../../lib/queryKeys";
+import { RealtimeLiveContext } from "../../lib/realtimeStatus";
 import { ImageModal } from "./ImageModal";
 
 vi.mock("../../lib/supabase", () => ({ supabase: { auth: {} } }));
@@ -57,7 +58,7 @@ function OpenImage({ id }: { id: number }) {
   );
 }
 
-function renderGallery() {
+function renderGallery(realtimeLive = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createMemoryRouter(
     [
@@ -75,7 +76,9 @@ function renderGallery() {
   );
   render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <RealtimeLiveContext value={realtimeLive}>
+        <RouterProvider router={router} />
+      </RealtimeLiveContext>
     </QueryClientProvider>,
   );
   return { router, opener: screen.getByRole("button", { name: "Open image 7" }) };
@@ -264,6 +267,20 @@ describe("ImageModal", () => {
     // Each poll signs the URL again. The picture keeps the first one rather than downloading it again.
     expect(picture).toHaveAttribute("src", "https://storage.test/original-7.jpg?token=first");
   });
+
+  it("waits well past the 2 second pace while the Realtime channel is live", async () => {
+    vi.mocked(getImage).mockResolvedValue(
+      makeImage({ status: "processing", tags: [], description: null, colors: [] }),
+    );
+    renderGallery(true);
+    const user = userEvent.setup();
+    const dialog = await openModal(user);
+    expect(within(dialog).getByText("Analyzing…")).toBeInTheDocument();
+
+    await new Promise((resolve) => setTimeout(resolve, 2400));
+
+    expect(getImage).toHaveBeenCalledTimes(1);
+  }, 8000);
 
   it("retries a failed analysis and refreshes the image", async () => {
     vi.mocked(getImage)

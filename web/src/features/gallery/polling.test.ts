@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AnalysisStatus, ImageOut, ImagePage } from "../../lib/api";
+import { LIVE_POLL_INTERVAL_MS } from "../../lib/realtimeStatus";
 import { POLL_INTERVAL_MS, refetchIntervalFor } from "./polling";
 import { makeImage } from "./testFixtures";
 
@@ -62,5 +63,32 @@ describe("refetchIntervalFor", () => {
   it("does not poll an empty gallery or before the first page arrives", () => {
     expect(refetchIntervalFor(pagesWith([]))).toBe(false);
     expect(refetchIntervalFor(undefined)).toBe(false);
+  });
+});
+
+describe("refetchIntervalFor with the Realtime channel", () => {
+  it("polls every 15 seconds while the channel is live and an image is analyzing", () => {
+    expect(LIVE_POLL_INTERVAL_MS).toBe(15_000);
+    expect(refetchIntervalFor(pagesWith(["done", "pending"]), true)).toBe(15_000);
+    expect(refetchIntervalFor(pagesWith(["done"], ["processing"]), true)).toBe(15_000);
+  });
+
+  it("keeps the 3 second pace while the channel is down", () => {
+    expect(refetchIntervalFor(pagesWith(["done", "pending"]), false)).toBe(3000);
+  });
+
+  it("keeps the 3 second pace when there is no channel at all, as in mocks mode", () => {
+    expect(refetchIntervalFor(pagesWith(["done", "pending"]))).toBe(3000);
+  });
+
+  it("still stops once nothing is analyzing", () => {
+    expect(refetchIntervalFor(pagesWith(["done", "failed"]), true)).toBe(false);
+    expect(refetchIntervalFor(undefined, true)).toBe(false);
+  });
+
+  it("keeps the fast pace for an empty thumbnail URL, which no push announces", () => {
+    const data = pageOf(makeImage(1), makeImage(2, { status: "pending" }, { thumbnail_url: "" }));
+
+    expect(refetchIntervalFor(data, true)).toBe(3000);
   });
 });
