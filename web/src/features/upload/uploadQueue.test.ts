@@ -644,3 +644,29 @@ describe("summarizeQueue with duplicates", () => {
     expect(summarizeQueue(state)).toBe("Upload complete, 1 already in your gallery, moved to top");
   });
 });
+
+describe("summarizeQueue while the daily quota has paused the queue", () => {
+  it("says the queued files are waiting for the limit, not uploading", () => {
+    const state = run([
+      added(4),
+      { type: "start", id: "f1" },
+      { type: "start", id: "f2" },
+      { type: "fail", id: "f1", error: "limit" },
+    ]);
+
+    expect(summarizeQueue(state)).toBe("Uploading 3 images, 1 upload failed");
+    expect(summarizeQueue(state, true)).toBe(
+      "Uploading 1 image, Upload limit reached, 2 images waiting, 1 upload failed",
+    );
+  });
+
+  it("leaves out the waiting part when nothing is queued", () => {
+    const state = run([
+      added(1),
+      { type: "start", id: "f1" },
+      { type: "fail", id: "f1", error: "limit" },
+    ]);
+
+    expect(summarizeQueue(state, true)).toBe("1 upload failed");
+  });
+});

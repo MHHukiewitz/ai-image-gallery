@@ -178,3 +178,25 @@ describe("UploadQueue", () => {
     expect(within(rowOf("b.png")).getByRole("button", { name: /dismiss/i })).toBeInTheDocument();
   });
 });
+
+describe("UploadQueue when the daily quota has paused it", () => {
+  it("says the queue is paused at the upload limit, and how many files wait", () => {
+    render(
+      <UploadQueue
+        items={[
+          item({ id: "a", status: "queued" }),
+          item({ id: "b", status: "error", error: "limit" }),
+        ]}
+        paused
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onDismiss={vi.fn()}
+        onView={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("Upload limit reached, 1 image waiting, 1 upload failed"),
+    ).toBeInTheDocument();
+  });
+});

@@ -6,6 +6,8 @@ import type { UploadItem, UploadQueueState, UploadStatus } from "./uploadQueue";
 
 interface UploadQueueProps {
   items: UploadQueueState;
+  /** True once the daily quota has refused an upload, so the queued files are waiting. */
+  paused?: boolean;
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
   onDismiss: (id: string) => void;
@@ -149,7 +151,14 @@ function UploadRow({
  * summary line is the live region: it changes when a file starts, finishes or fails, so a
  * screen reader hears the progress without a message for every percent.
  */
-export function UploadQueue({ items, onCancel, onRetry, onDismiss, onView }: UploadQueueProps) {
+export function UploadQueue({
+  items,
+  paused = false,
+  onCancel,
+  onRetry,
+  onDismiss,
+  onView,
+}: UploadQueueProps) {
   return (
     <div role="group" aria-label="Uploads" className={clsx(items.length > 0 && "space-y-2")}>
       <p
@@ -157,7 +166,7 @@ export function UploadQueue({ items, onCancel, onRetry, onDismiss, onView }: Upl
         aria-atomic="true"
         className="text-sm font-medium text-zinc-600 empty:hidden dark:text-zinc-300"
       >
-        {summarizeQueue(items)}
+        {summarizeQueue(items, paused)}
       </p>
       {items.length > 0 && (
         <ul className="space-y-2">
