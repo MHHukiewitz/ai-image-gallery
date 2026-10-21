@@ -20,6 +20,7 @@ from gallery.adapters import supabase_storage
 from gallery.adapters.supabase_client import AsyncClient, close_client, user_client
 from gallery.adapters.supabase_storage import SignedUrlCache, SupabaseObjectStore
 from gallery.config import Settings
+from gallery.domain.errors import QuotaExceededError
 from gallery.domain.models import ImageRecord, NewImage
 from gallery.services.uploads import UploadService
 
@@ -39,6 +40,20 @@ def too_many_connections(status_code: object = "429") -> httpx.Response:
             "statusCode": status_code,
             "error": "too_many_connections",
             "message": "Too many connections issued to the database",
+        },
+    )
+
+
+def storage_quota_refusal() -> httpx.Response:
+    """What storage-api v1.82 answers when enforce_storage_quota raises PT429 (seen on the local
+    stack): a 500 that names the SQLSTATE and drops the database's message."""
+    return httpx.Response(
+        500,
+        json={
+            "statusCode": "500",
+            "error": "DatabaseError",
+            "message": "database error, code: PT429",
+            "code": "DatabaseError",
         },
     )
 
@@ -365,6 +380,80 @@ async def test_a_duplicate_on_a_retry_means_the_first_try_landed(
     assert upload.call_count == 2
 
 
+# --- the storage quota ---------------------------------------------------------------------
+
+
+async def test_a_storage_quota_refusal_is_a_quota_error_with_a_short_retry_after(
+    store: SupabaseObjectStore, storage_http: respx.MockRouter, pauses: Pauses
+) -> None:
+    upload = storage_http.post(UPLOAD_URL).mock(return_value=storage_quota_refusal())
+
+    with pytest.raises(QuotaExceededError) as excinfo:
+        await store.put(PATH, b"data", "image/webp")
+
+    assert excinfo.value.message == (
+        "You've reached your storage limit. Delete some images to make room."
+    )
+    # A slot frees as soon as the user deletes an image, so there is no day to wait out.
+    assert excinfo.value.retry_after_seconds == 60
+    # It's a 500, but retrying can't free a slot.
+    assert upload.call_count == 1
+    assert pauses.sleeps == []
+
+
+async def test_a_429_that_carries_the_pt429_code_is_a_quota_error_too(
+    store: SupabaseObjectStore, storage_http: respx.MockRouter, pauses: Pauses
+) -> None:
+    """How a storage-api that answers PT429 the way PostgREST does would send it."""
+    body = {"statusCode": "429", "error": "PT429", "message": "You've reached your storage limit"}
+    upload = storage_http.post(UPLOAD_URL).mock(return_value=httpx.Response(429, json=body))
+
+    with pytest.raises(QuotaExceededError):
+        await store.put(PATH, b"data", "image/webp")
+
+    assert upload.call_count == 1
+
+
+async def test_another_database_error_is_still_retried(
+    store: SupabaseObjectStore, storage_http: respx.MockRouter, pauses: Pauses
+) -> None:
+    body = {"statusCode": "500", "error": "DatabaseError", "message": "database error, code: XX000"}
+    upload = storage_http.post(UPLOAD_URL).mock(
+        side_effect=lambda request: httpx.Response(500, json=body)
+    )
+
+    with pytest.raises(StorageApiError):
+        await store.put(PATH, b"data", "image/webp")
+
+    assert upload.call_count == 4
+
+
+async def test_a_refusal_after_a_transient_failure_is_a_quota_error(
+    store: SupabaseObjectStore, storage_http: respx.MockRouter
+) -> None:
+    storage_http.post(UPLOAD_URL).mock(
+        side_effect=[too_many_connections(), storage_quota_refusal()]
+    )
+
+    with pytest.raises(QuotaExceededError):
+        await store.put(PATH, b"data", "image/webp")
+
+
+async def test_a_storage_quota_refusal_is_logged_as_a_user_mistake(
+    store: SupabaseObjectStore, storage_http: respx.MockRouter, caplog: pytest.LogCaptureFixture
+) -> None:
+    storage_http.post(UPLOAD_URL).mock(return_value=storage_quota_refusal())
+
+    with (
+        caplog.at_level(logging.INFO, logger=supabase_storage.__name__),
+        pytest.raises(QuotaExceededError),
+    ):
+        await store.put(PATH, b"data", "image/webp")
+
+    # INFO, not ERROR: Sentry gets ERROR and above, and this is the user's limit, not a bug.
+    assert [record.levelno for record in caplog.records] == [logging.INFO]
+
+
 # --- signed-url cache ----------------------------------------------------------------------
 
 
@@ -607,6 +696,37 @@ async def test_a_failed_thumbnail_put_deletes_the_original(
 
     assert original.call_count == 1
     assert thumbnail.call_count == 4  # retried before giving up
+    [removal] = remove.calls
+    removed = json.loads(removal.request.content)["prefixes"]
+    assert any(path.endswith("/original.png") for path in removed)
+
+
+async def test_a_thumbnail_refused_by_the_storage_quota_deletes_the_original(
+    store: SupabaseObjectStore, storage_http: respx.MockRouter
+) -> None:
+    """The original took the last free slot, so the thumbnail is refused, and the original must
+    go too: an image without its thumbnail would hold a slot and show nothing."""
+    owner = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
+    original = storage_http.post(url__regex=rf"{BASE}/object/images/{owner}/[^/]+/original\.png")
+    thumbnail = storage_http.post(url__regex=rf"{BASE}/object/images/{owner}/[^/]+/thumb\.webp")
+    remove = storage_http.delete(REMOVE_URL)
+    original.mock(return_value=httpx.Response(200, json={"Key": "original"}))
+    thumbnail.mock(return_value=storage_quota_refusal())
+    remove.mock(return_value=httpx.Response(200, json=[]))
+    png = BytesIO()
+    Image.new("RGB", (64, 48), "teal").save(png, format="PNG")
+    service = UploadService(
+        UnreachableImageRepo(),
+        store,
+        max_bytes=1024 * 1024,
+        max_pixels=1_000_000,
+        signed_url_ttl=3600,
+    )
+
+    with pytest.raises(QuotaExceededError):
+        await service.upload(owner, "beach.png", png.getvalue())
+
+    assert thumbnail.call_count == 1
     [removal] = remove.calls
     removed = json.loads(removal.request.content)["prefixes"]
     assert any(path.endswith("/original.png") for path in removed)
