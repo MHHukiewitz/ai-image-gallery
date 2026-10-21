@@ -181,20 +181,23 @@ export function nextToStart(
  * One sentence for the live region. It changes when a file starts, finishes or fails, not on
  * every progress tick, so a screen reader isn't flooded. While a drop is being hashed it counts
  * the files read so far ("Checking 12 of 30…"), because that is the one wait with nothing else
- * moving on screen.
+ * moving on screen. `paused` is set once the daily quota has refused an upload: the queued files
+ * are waiting for the user, not going out, so they are not counted as uploading.
  */
-export function summarizeQueue(state: UploadQueueState): string {
+export function summarizeQueue(state: UploadQueueState, paused = false): string {
   const count = (status: UploadStatus) => state.filter((item) => item.status === status).length;
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
   const checking = count("checking");
   const hashed = state.filter((item) => item.status === "checking" && item.hashed).length;
-  const active = count("uploading") + count("queued");
+  const queued = count("queued");
+  const active = count("uploading") + (paused ? 0 : queued);
   const failed = count("error");
   const parts: string[] = [];
   if (checking > hashed) parts.push(`Checking ${hashed} of ${checking}…`);
   else if (checking > 0) parts.push(`Checking ${plural(checking, "image")}`);
   if (active > 0) parts.push(`Uploading ${plural(active, "image")}`);
+  if (paused && queued > 0) parts.push(`Upload limit reached, ${plural(queued, "image")} waiting`);
   if (failed > 0) parts.push(`${plural(failed, "upload")} failed`);
   if (parts.length > 0) return parts.join(", ");
 
