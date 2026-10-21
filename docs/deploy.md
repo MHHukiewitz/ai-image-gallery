@@ -5,8 +5,8 @@ The gallery runs at `https://gallery.hukiewitz.com` on ops-server (`ops@5.75.189
 | Container | Image | Reached by | Memory limit |
 |---|---|---|---|
 | `web` | nginx serving the built SPA, on port 8080 | Traefik, `Host(gallery.hukiewitz.com)` | 64 MB |
-| `api` | FastAPI on port 8000 | Traefik, same host plus `PathPrefix(/api)`, priority 100 | 256 MB |
-| `worker` | same code as `api`, runs the analysis loop | nothing: it only calls Supabase and the AI provider | 512 MB |
+| `api` | FastAPI on port 8000 | Traefik, same host plus `PathPrefix(/api)`, priority 100 | 768 MB |
+| `worker` | same code as `api`, runs the analysis loop | nothing: it only calls Supabase and the AI provider | 1 GB |
 
 The database, auth and file storage live in **Supabase Cloud**, not on the server. The design is in [architecture.md](architecture.md#10-deployment-ops-server).
 
