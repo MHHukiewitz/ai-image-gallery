@@ -298,13 +298,14 @@ select ok(
      = (select array_agg(a.attname::text order by a.attnum) || 'score'::text
         from pg_attribute a
         -- last_uploaded_at (#60) only orders the unfiltered gallery. Search ranks by score.
+        -- stored_sha256 (#113) is only for finding duplicates, not part of a result.
         where a.attrelid = 'public.image_details'::regclass and a.attnum > 0 and not a.attisdropped
-          and a.attname <> 'last_uploaded_at')
+          and a.attname not in ('last_uploaded_at', 'stored_sha256'))
    )
    from pg_proc p
    where p.pronamespace = 'public'::regnamespace
      and p.proname in ('search_images', 'similar_images', 'images_by_color')),
-  'search_images, similar_images and images_by_color return the image_details columns (but last_uploaded_at) plus score, in that order'
+  'search_images, similar_images and images_by_color return the image_details columns (but last_uploaded_at and stored_sha256) plus score, in that order'
 );
 select ok(
   (select count(*) = 3 and bool_and(not p.prosecdef and p.provolatile = 's' and p.prolang = (select oid from pg_language where lanname = 'sql'))
