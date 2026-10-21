@@ -1,35 +1,85 @@
 # Local stack built from this repo's Dockerfiles: API, worker and the SPA behind nginx.
 # Supabase is not part of this file. Start it with `make dev-db` first. The containers
 # reach it on the host through host.docker.internal.
-# Copy .env.example to .env first. Compose reads it for env_file and for build args.
+# Copy .env.example to .env first. Compose reads it to fill the ${VAR} values below, and for
+# the web build args.
+#
+# Each service lists its own variables, as deploy/compose.prod.yml does. A variable reaches a
+# container only when it is listed here, so the API never receives SUPABASE_SECRET_KEY.
 name: ai-gallery
 
-x-api: &api
+x-backend: &backend
   build:
     context: ./api
+    args:
+      # The image downloads the embedding model at build time, so a new model needs a rebuild.
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
   image: ai-gallery-api:local
-  env_file: .env
-  environment:
-    # Inside a container, 127.0.0.1 is the container itself, so point at the host's Supabase.
-    SUPABASE_URL: http://host.docker.internal:54321
-    # The fake analyzer needs no AI key. A value in .env overrides this default.
-    ANALYZER: ${ANALYZER:-fake}
   extra_hosts:
     - "host.docker.internal:host-gateway"
 
+x-backend-env: &backend-env
+  # Inside a container, 127.0.0.1 is the container itself, so point at the host's Supabase.
+  SUPABASE_URL: http://host.docker.internal:54321
+  SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+  SUPABASE_JWKS_URL: ${SUPABASE_JWKS_URL:-}
+  STORAGE_BUCKET: ${STORAGE_BUCKET:-}
+  MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-}
+  MAX_IMAGE_PIXELS: ${MAX_IMAGE_PIXELS:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-development}
+  SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-}
+  RELEASE: ${RELEASE:-}
+  SUPABASE_HTTP_TIMEOUT_SECONDS: ${SUPABASE_HTTP_TIMEOUT_SECONDS:-}
+  EMBEDDER: ${EMBEDDER:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  EMBEDDING_CACHE_DIR: ${EMBEDDING_CACHE_DIR:-}
+
 services:
   api:
-    <<: *api
+    <<: *backend
     restart: unless-stopped
+    environment:
+      <<: *backend-env
+      SIGNED_URL_TTL_SECONDS: ${SIGNED_URL_TTL_SECONDS:-}
+      UPLOAD_DAILY_QUOTA: ${UPLOAD_DAILY_QUOTA:-}
+      UPLOAD_QUOTA_EXEMPT_EMAILS: ${UPLOAD_QUOTA_EXEMPT_EMAILS:-}
+      # Not in production's list yet. Kept here so a value set in .env still reaches the API.
+      UPLOAD_PROCESSING_CONCURRENCY: ${UPLOAD_PROCESSING_CONCURRENCY:-}
 
   # Same build as api. The command starts the analysis loop instead of uvicorn. The image's
   # HEALTHCHECK is turned off because the worker serves no HTTP.
   worker:
-    <<: *api
+    <<: *backend
     command: ["python", "-m", "gallery.worker"]
     healthcheck:
       disable: true
     restart: on-failure
+    environment:
+      <<: *backend-env
+      # Only the worker holds the key that bypasses RLS.
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+      # The fake analyzer needs no AI key. A value in .env overrides this default.
+      ANALYZER: ${ANALYZER:-fake}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_EFFORT: ${AI_EFFORT:-}
+      AI_TIMEOUT_SECONDS: ${AI_TIMEOUT_SECONDS:-}
+      # Only read when ANALYZER=openai_compat.
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      # Not in production's list yet. Kept here so the tag verifier can be switched on from .env.
+      TAG_VERIFIER: ${TAG_VERIFIER:-}
+      TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      JEV_MODEL: ${JEV_MODEL:-}
+      TAG_MIN_PROBABILITY: ${TAG_MIN_PROBABILITY:-}
+      TAG_VERIFIER_TIMEOUT_SECONDS: ${TAG_VERIFIER_TIMEOUT_SECONDS:-}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-}
+      WORKER_POLL_MIN_SECONDS: ${WORKER_POLL_MIN_SECONDS:-}
+      WORKER_POLL_MAX_SECONDS: ${WORKER_POLL_MAX_SECONDS:-}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-}
+      JOB_STALE_AFTER_SECONDS: ${JOB_STALE_AFTER_SECONDS:-}
 
   web:
     build:
