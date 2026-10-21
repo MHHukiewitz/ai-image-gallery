@@ -86,6 +86,28 @@ Each filename's leading timestamp must appear in the dashboard list. If one is m
 
 The private `images` storage bucket is created by a migration too. **Storage** in the dashboard should list it.
 
+### Storage quota
+
+The database caps the objects one user may hold in the `images` bucket at 2000 (two per image: the original and its thumbnail). A user at the cap gets 429 `quota_exceeded` until they delete images. To raise the cap, or set it to `0` to turn it off, run one UPDATE in the dashboard's **SQL Editor**. It applies to the next upload, with no deploy:
+
+```sql
+update public.quota_settings set max_storage_objects = 5000;
+```
+
+To lift it for one user only, add their id (from **Authentication → Users**) to the exemptions, which the daily upload quota shares:
+
+```sql
+insert into public.quota_exempt_users (user_id) values ('<user-id>');
+```
+
+To see who is close to the cap:
+
+```sql
+select (storage.foldername(name))[1] as user_id, count(*) as objects
+from storage.objects where bucket_id = 'images'
+group by 1 order by 2 desc limit 10;
+```
+
 ### Auth
 
 `supabase/config.toml` only configures the local stack. Production auth is set once in the dashboard:
