@@ -1,4 +1,5 @@
-"""Analysis worker: claims jobs from the Postgres queue and runs each through AnalysisService.
+"""Background worker: claims jobs from the Postgres `jobs` queue and runs each through the handler
+registered for its kind. ``analyze_image`` (AnalysisService) is the only kind so far.
 
 Run with ``python -m gallery.worker``. The worker is the only component that holds the Supabase
 secret key, and it has no ingress: it polls.
@@ -8,8 +9,7 @@ import asyncio
 import contextlib
 import logging
 import signal
-from collections.abc import Iterator
-from typing import Protocol
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 
 from gallery.adapters.analyzers import build_analyzer
 from gallery.adapters.embeddings import build_embedder
@@ -19,10 +19,10 @@ from gallery.adapters.supabase_jobs import SupabaseJobQueue
 from gallery.adapters.supabase_storage import SupabaseObjectStore
 from gallery.adapters.verifiers import build_tag_verifier
 from gallery.config import Settings, get_settings
-from gallery.domain.models import AnalysisJob
+from gallery.domain.models import Job
 from gallery.observability import init_observability
 from gallery.ports import JobQueue
-from gallery.services.analysis import AnalysisService
+from gallery.services.analysis import ANALYZE_IMAGE, AnalysisService
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +33,8 @@ DRAIN_TIMEOUT_SECONDS = 30.0
 # an ERROR (and so a Sentry event).
 CLAIM_FAILURES_BEFORE_ERROR = 5
 
-
-class JobRunner(Protocol):
-    """What the loop needs from the service. ``process`` must not raise."""
-
-    async def process(self, job: AnalysisJob) -> None: ...
+# Runs one claimed job to its end and records the outcome in the queue. It must not raise.
+type JobHandler = Callable[[Job], Awaitable[None]]
 
 
 def main() -> None:
@@ -76,9 +73,11 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
             min_tag_probability=settings.TAG_MIN_PROBABILITY,
             embedder=embedder,
         )
+        handlers: dict[str, JobHandler] = {ANALYZE_IMAGE: service.process}
         logger.info(
             "worker started",
             extra={
+                "job_kinds": sorted(handlers),
                 "analyzer_id": analyzer.analyzer_id,
                 "tag_verifier": settings.TAG_VERIFIER,
                 "embedding_model": embedder.model_id if embedder else None,
@@ -90,7 +89,7 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
         with _stop_on_signals(stop):
             await work_loop(
                 queue,
-                service,
+                handlers,
                 concurrency=settings.WORKER_CONCURRENCY,
                 poll_min_seconds=settings.WORKER_POLL_MIN_SECONDS,
                 poll_max_seconds=settings.WORKER_POLL_MAX_SECONDS,
@@ -103,7 +102,7 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
 
 async def work_loop(
     queue: JobQueue,
-    runner: JobRunner,
+    handlers: Mapping[str, JobHandler],
     *,
     concurrency: int,
     poll_min_seconds: float,
@@ -113,12 +112,16 @@ async def work_loop(
 ) -> None:
     """Claim jobs and run them, at most ``concurrency`` at a time, until ``stop`` is set.
 
+    Only the kinds in ``handlers`` are claimed, and each job runs through the handler of its kind.
+    A job of any other kind can only come from a broken queue, and it is failed for good.
+
     The sleep between claims starts at ``poll_min_seconds``, doubles after each one up to
     ``poll_max_seconds``, and returns to the minimum when a claim brings work. A job that
     finishes cuts the sleep short, because it freed a slot that queued work may be waiting for.
     Once ``stop`` is set, nothing more is claimed and running jobs get ``drain_timeout_seconds``
     to finish.
     """
+    kinds = list(handlers)
     semaphore = asyncio.Semaphore(concurrency)
     in_flight: set[asyncio.Task[None]] = set()
     # Set whenever a job finishes, and cleared before each claim. A job that ends while the claim
@@ -131,14 +134,18 @@ async def work_loop(
         in_flight.discard(task)
         slot_freed.set()
 
-    async def run_one(job: AnalysisJob) -> None:
+    async def run_one(job: Job) -> None:
         async with semaphore:
+            handler = handlers.get(job.kind)
             try:
-                await runner.process(job)
+                if handler is None:
+                    await _fail_unknown_kind(queue, job)
+                else:
+                    await handler(job)
             except Exception:
-                # `process` is meant to catch everything. This keeps a bug in it from ending
+                # A handler is meant to catch everything. This keeps a bug in one from ending
                 # the task silently.
-                logger.exception("job runner raised", extra={"image_id": job.image_id})
+                logger.exception("job handler raised", extra={"job_id": job.id, "kind": job.kind})
 
     while not stop.is_set():
         free = concurrency - len(in_flight)
@@ -148,7 +155,7 @@ async def work_loop(
 
         slot_freed.clear()
         try:
-            jobs = await queue.claim(free)
+            jobs = await queue.claim(kinds, free)
         except Exception:
             claim_failures += 1
             # A transient failure is a warning. A long run of them is an error.
@@ -183,6 +190,14 @@ async def work_loop(
         delay = min(delay * 2, poll_max_seconds)
 
     await _drain(in_flight, drain_timeout_seconds)
+
+
+async def _fail_unknown_kind(queue: JobQueue, job: Job) -> None:
+    """Fail a job that no handler is registered for. It is a bug, so it is logged as an error."""
+    logger.error(
+        "no handler for the job's kind, failing it", extra={"job_id": job.id, "kind": job.kind}
+    )
+    await queue.fail(job.id, error=f"No handler for job kind {job.kind!r}", retryable=False)
 
 
 async def _sleep_or_stop(

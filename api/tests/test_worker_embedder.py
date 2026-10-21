@@ -20,6 +20,9 @@ class RecordingService:
         self.kwargs = kwargs
         RecordingService.instances.append(self)
 
+    async def process(self, job: object) -> None:
+        raise NotImplementedError
+
 
 @pytest.fixture
 def connections(monkeypatch: pytest.MonkeyPatch) -> list[str]:

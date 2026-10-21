@@ -88,12 +88,34 @@ class ImageRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class AnalysisJob:
+class Job:
+    """One job a worker claimed from the `jobs` queue.
+
+    `kind` picks its handler. `image_id` and `user_id` are None for a kind that isn't about one
+    image. `attempts` includes the claim that handed the job out.
+    """
+
+    id: int
+    kind: str
+    image_id: int | None
+    user_id: UUID | None
+    attempts: int
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisTarget:
+    """The image of an `analyze_image` job, as the worker finds it after the claim.
+
+    `status` is the image's analysis state. Done or failed means the analysis already ended
+    outside this job, because the worker from before the jobs table finished it while the job
+    waited.
+    """
+
     image_id: int
-    user_id: UUID
     original_path: str
     content_sha256: str
-    attempts: int
+    status: AnalysisStatus
+    error: str | None
 
 
 @dataclass(frozen=True, slots=True)

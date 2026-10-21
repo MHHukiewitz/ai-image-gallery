@@ -37,7 +37,7 @@ from gallery.api import deps
 from gallery.backfill_embeddings import BacklogRow, SupabaseBacklog, backfill
 from gallery.config import Settings
 from gallery.domain.embedding_text import embedding_text
-from gallery.domain.models import AnalysisJob, NewImage
+from gallery.domain.models import Job, NewImage
 from gallery.services.analysis import AnalysisService
 
 pytestmark = pytest.mark.integration
@@ -287,11 +287,20 @@ async def test_the_service_completes_a_job_and_stores_its_embedding(
         SupabaseAnalysisCache(worker),
         embedder=_EMBEDDER,
     )
-    job = AnalysisJob(
+    # The job the upload queued, run as a claim would hand it out.
+    queued = (
+        await worker.table("jobs")
+        .select("id, kind")
+        .eq("image_id", image_id)
+        .eq("status", "pending")
+        .single()
+        .execute()
+    )
+    job = Job(
+        id=queued.data["id"],
+        kind=queued.data["kind"],
         image_id=image_id,
         user_id=alice.id,
-        original_path=f"{alice.id}/x/original.png",
-        content_sha256=uuid.uuid4().hex * 2,
         attempts=1,
     )
 

@@ -1,19 +1,26 @@
-"""The use case behind one analysis job: read the image, find its colors, tag it, store the result.
+"""The use case behind one ``analyze_image`` job: read the image, find its colors, tag it, store
+the result.
 
-``AnalysisService.process`` never raises. Every failure becomes a ``queue.fail`` call, and every
-job ends in exactly one structured log line, which doubles as the cost dashboard (see
-docs/architecture.md §7). The log level of that line decides what reaches Sentry, whose logging
-integration sends ``ERROR`` and above:
+``AnalysisService.process`` is the worker's handler for that kind of job, and it never raises.
+Every failure becomes a ``queue.fail_analysis`` call (``queue.fail`` when the image couldn't even
+be looked up), and every job ends in exactly one structured log line, which doubles as the cost
+dashboard (see docs/architecture.md §7). The log level of that line decides what reaches Sentry,
+whose logging integration sends ``ERROR`` and above:
 
 ======================================  ===========
 Outcome                                 Level
 ======================================  ===========
 done                                    ``INFO``
+skipped (the analysis already ended)    ``INFO``
 corrupt image (the user's file)         ``INFO``
 retryable ``AnalyzerError``             ``WARNING``
 non-retryable ``AnalyzerError``         ``ERROR``
 any other exception                     ``ERROR``, with the stack trace
 ======================================  ===========
+
+A job is skipped when its image is gone or its analysis already ended outside the job: the worker
+from before the jobs table finishes the uploads that arrive between the migration and the deploy,
+while their jobs wait. The job is then closed with the same outcome, and the analyzer isn't called.
 
 The optional tag verifier is best-effort and never changes that outcome. When it fails, the
 analyzer's tags are stored unchanged and the job still ends ``done``, after a ``WARNING`` for a
@@ -35,7 +42,14 @@ from typing import Any, Literal
 from gallery.domain.colors import dominant_colors
 from gallery.domain.embedding_text import embedding_text
 from gallery.domain.errors import AnalyzerError, InvalidImageError, TagVerificationError
-from gallery.domain.models import Analysis, AnalysisJob, AnalysisUsage, TagVerdict
+from gallery.domain.models import (
+    Analysis,
+    AnalysisStatus,
+    AnalysisTarget,
+    AnalysisUsage,
+    Job,
+    TagVerdict,
+)
 from gallery.domain.tags import select_tags
 from gallery.ports import (
     AnalysisCache,
@@ -48,11 +62,16 @@ from gallery.ports import (
 
 logger = logging.getLogger(__name__)
 
-type Outcome = Literal["done", "retry", "failed"]
+# The kind of job this service runs.
+ANALYZE_IMAGE = "analyze_image"
+
+type Outcome = Literal["done", "skipped", "retry", "failed"]
 
 # What users see in `last_error`. The details go to the logs, not to the gallery.
 UNDECODABLE_IMAGE_ERROR = "Image could not be decoded"
 UNEXPECTED_ERROR = "Unexpected error during analysis"
+
+_FINISHED = (AnalysisStatus.DONE, AnalysisStatus.FAILED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,28 +142,52 @@ class AnalysisService:
         self._min_tag_probability = min_tag_probability
         self._embedder = embedder
 
-    async def process(self, job: AnalysisJob) -> None:
-        """Analyze one claimed job and record the result. Never raises (cancellation aside)."""
+    async def process(self, job: Job) -> None:
+        """Analyze the image of one claimed analyze_image job and record the result.
+
+        A job whose analysis already ended is closed without analyzing. Never raises
+        (cancellation aside).
+        """
         started = time.monotonic()
+        try:
+            target = await self._queue.analysis_target(job.id)
+        except Exception as unexpected:
+            # The image's state is unknown, so fail only the job and leave the image's colors.
+            await self._fail(
+                job,
+                started,
+                logging.ERROR,
+                error=UNEXPECTED_ERROR,
+                colors=None,
+                retryable=True,
+                exception=unexpected,
+            )
+            return
+        if target is None or target.status in _FINISHED:
+            await self._close_finished(job, target, started)
+            return
+        await self._analyze(job, target, started)
+
+    async def _analyze(self, job: Job, target: AnalysisTarget, started: float) -> None:
         colors: tuple[str, ...] = ()
         analysis: Analysis | None = None
         verification: _Verification | None = None
         embedding: _Embedding | None = None
         cache_hit = False
         try:
-            data = await self._store.get(job.original_path)
+            data = await self._store.get(target.original_path)
             # Decoding and quantizing are CPU work, so keep them off the event loop.
             colors = await asyncio.to_thread(dominant_colors, data)
-            analysis, cache_hit = await self._analysis_for(job, data)
-            tags, verification = await self._verified_tags(job, data, analysis)
-            await self._queue.complete(
-                job.image_id,
+            analysis, cache_hit = await self._analysis_for(target, data)
+            tags, verification = await self._verified_tags(target, data, analysis)
+            await self._queue.complete_analysis(
+                job.id,
                 tags=tags,
                 description=analysis.description,
                 colors=colors,
                 analyzer_id=self._analyzer.analyzer_id,
             )
-            embedding = await self._store_embedding(job, tags, analysis.description)
+            embedding = await self._store_embedding(target, tags, analysis.description)
         except InvalidImageError:
             await self._fail(
                 job,
@@ -190,18 +233,46 @@ class AnalysisService:
                 embedding=embedding,
             )
 
-    async def _analysis_for(self, job: AnalysisJob, data: bytes) -> tuple[Analysis, bool]:
+    async def _close_finished(
+        self, job: Job, target: AnalysisTarget | None, started: float
+    ) -> None:
+        """Close a job with nothing left to do, without reading the image or calling the analyzer.
+
+        The image is gone, or its analysis already ended outside this job. The job ends the way
+        the analysis did, and the image keeps the result it has.
+        """
+        try:
+            if target is not None and target.status is AnalysisStatus.FAILED:
+                await self._queue.fail(
+                    job.id, error=target.error or UNEXPECTED_ERROR, retryable=False
+                )
+            else:
+                await self._queue.complete(job.id)
+        except Exception:
+            logger.warning(
+                "could not close a job whose analysis already ended; it will be reclaimed when "
+                "it goes stale",
+                exc_info=True,
+                extra={"job_id": job.id, "image_id": job.image_id},
+            )
+        if target is None:
+            message, status = "image is gone, job closed", None
+        else:
+            message, status = "analysis already ended, job closed", target.status
+        self._log_job(logging.INFO, message, job, started, "skipped", False, None, status=status)
+
+    async def _analysis_for(self, target: AnalysisTarget, data: bytes) -> tuple[Analysis, bool]:
         """Return the analysis and whether it came from the cache."""
         analyzer_id = self._analyzer.analyzer_id
-        cached = await self._cache_get(job, analyzer_id)
+        cached = await self._cache_get(target, analyzer_id)
         if cached is not None:
             return cached, True
-        analysis = await self._analyzer.analyze(data, _mime_type(job))
-        await self._cache_put(job, analyzer_id, analysis)
+        analysis = await self._analyzer.analyze(data, _mime_type(target))
+        await self._cache_put(target, analyzer_id, analysis)
         return analysis, False
 
     async def _verified_tags(
-        self, job: AnalysisJob, data: bytes, analysis: Analysis
+        self, target: AnalysisTarget, data: bytes, analysis: Analysis
     ) -> tuple[tuple[str, ...], _Verification | None]:
         """Return the tags to store, and what the verifier did (None when there is none).
 
@@ -213,18 +284,18 @@ class AnalysisService:
             return analysis.tags, None
         started = time.monotonic()
         try:
-            verdict = await self._verifier.verify(data, _mime_type(job), analysis.tags)
+            verdict = await self._verifier.verify(data, _mime_type(target), analysis.tags)
             tags = select_tags(analysis.tags, verdict, min_probability=self._min_tag_probability)
         except TagVerificationError as error:
             logger.warning(
                 "tag verification failed, keeping the analyzer's tags",
-                extra={"image_id": job.image_id, "error": str(error)},
+                extra={"image_id": target.image_id, "error": str(error)},
             )
             return analysis.tags, _Verification(latency_ms=_elapsed_ms(started))
         except Exception:
             logger.exception(
                 "tag verification crashed, keeping the analyzer's tags",
-                extra={"image_id": job.image_id},
+                extra={"image_id": target.image_id},
             )
             return analysis.tags, _Verification(latency_ms=_elapsed_ms(started))
         dropped, merged = _count_changes(analysis.tags, tags, verdict)
@@ -236,13 +307,13 @@ class AnalysisService:
         )
 
     async def _store_embedding(
-        self, job: AnalysisJob, tags: Sequence[str], description: str
+        self, target: AnalysisTarget, tags: Sequence[str], description: str
     ) -> _Embedding | None:
         """Embed the final text and store the vector. Return what happened (None when skipped).
 
-        This runs after `complete` on purpose: completing an analysis drops an embedding that no
-        longer matches the new text, so a vector stored earlier would be thrown away. It never
-        raises. An embedding only refines "find similar", which falls back to the tags, so a
+        This runs after `complete_analysis` on purpose: completing an analysis drops an embedding
+        that no longer matches the new text, so a vector stored earlier would be thrown away. It
+        never raises. An embedding only refines "find similar", which falls back to the tags, so a
         failure here is a warning and the job stays done.
         """
         if self._embedder is None:
@@ -253,62 +324,73 @@ class AnalysisService:
         started = time.monotonic()
         try:
             [vector] = await self._embedder.embed([text])
-            await self._queue.store_embedding(job.image_id, vector, self._embedder.model_id)
+            await self._queue.store_embedding(target.image_id, vector, self._embedder.model_id)
         except Exception:
             logger.warning(
                 "embedding failed, the image keeps matching on its tags",
                 exc_info=True,
-                extra={"image_id": job.image_id},
+                extra={"image_id": target.image_id},
             )
             return _Embedding(latency_ms=_elapsed_ms(started), stored=False)
         return _Embedding(latency_ms=_elapsed_ms(started), stored=True)
 
     # The cache only saves money, so a cache failure must not fail the job: a failed `put` in
     # particular would throw away a paid analysis and pay for it again on the retry.
-    async def _cache_get(self, job: AnalysisJob, analyzer_id: str) -> Analysis | None:
+    async def _cache_get(self, target: AnalysisTarget, analyzer_id: str) -> Analysis | None:
         try:
-            return await self._cache.get(job.content_sha256, analyzer_id)
+            return await self._cache.get(target.content_sha256, analyzer_id)
         except Exception:
             logger.warning(
                 "analysis cache lookup failed, analyzing without it",
                 exc_info=True,
-                extra={"image_id": job.image_id},
+                extra={"image_id": target.image_id},
             )
             return None
 
-    async def _cache_put(self, job: AnalysisJob, analyzer_id: str, analysis: Analysis) -> None:
+    async def _cache_put(
+        self, target: AnalysisTarget, analyzer_id: str, analysis: Analysis
+    ) -> None:
         try:
-            await self._cache.put(job.content_sha256, analyzer_id, analysis)
+            await self._cache.put(target.content_sha256, analyzer_id, analysis)
         except Exception:
             logger.warning(
                 "analysis cache write failed, the result is not cached",
                 exc_info=True,
-                extra={"image_id": job.image_id},
+                extra={"image_id": target.image_id},
             )
 
     async def _fail(
         self,
-        job: AnalysisJob,
+        job: Job,
         started: float,
         level: int,
         *,
         error: str,
-        colors: Sequence[str],
+        colors: Sequence[str] | None,
         retryable: bool,
         cache_hit: bool = False,
         analysis: Analysis | None = None,
         verification: _Verification | None = None,
         exception: BaseException | None = None,
     ) -> None:
-        """Hand the failure to the queue, then write the job's log line at `level`."""
+        """Hand the failure to the queue, then write the job's log line at `level`.
+
+        `colors` are stored on the image. None fails the job alone, for a failure that came before
+        the image was even looked up.
+        """
         outcome: Outcome = "retry" if retryable and job.attempts < self._max_attempts else "failed"
         try:
-            await self._queue.fail(job.image_id, error=error, colors=colors, retryable=retryable)
+            if colors is None:
+                await self._queue.fail(job.id, error=error, retryable=retryable)
+            else:
+                await self._queue.fail_analysis(
+                    job.id, error=error, colors=colors, retryable=retryable
+                )
         except Exception:
             # Nothing more to try here. The job stays 'processing' and is reclaimed once stale.
             logger.exception(
                 "could not record a failed analysis; the job will be reclaimed when it goes stale",
-                extra={"image_id": job.image_id},
+                extra={"job_id": job.id, "image_id": job.image_id},
             )
         message = "analysis will be retried" if outcome == "retry" else "analysis failed"
         self._log_job(
@@ -328,7 +410,7 @@ class AnalysisService:
         self,
         level: int,
         message: str,
-        job: AnalysisJob,
+        job: Job,
         started: float,
         outcome: Outcome,
         cache_hit: bool,
@@ -337,10 +419,15 @@ class AnalysisService:
         verification: _Verification | None = None,
         embedding: _Embedding | None = None,
         error: str | None = None,
+        status: AnalysisStatus | None = None,
         exception: BaseException | None = None,
     ) -> None:
-        """Write the job's one summary line, with cost fields when the provider reported usage."""
+        """Write the job's one summary line, with cost fields when the provider reported usage.
+
+        `status` is the state a skipped job found its image's analysis in.
+        """
         fields: dict[str, Any] = {
+            "job_id": job.id,
             "image_id": job.image_id,
             "outcome": outcome,
             "cache_hit": cache_hit,
@@ -349,6 +436,8 @@ class AnalysisService:
         }
         if error is not None:
             fields["error"] = error
+        if status is not None:
+            fields["analysis_status"] = str(status)
         if analysis is not None and analysis.usage is not None:
             usage = analysis.usage
             fields.update(
@@ -365,8 +454,8 @@ class AnalysisService:
         logger.log(level, message, extra=fields, exc_info=exception)
 
 
-def _mime_type(job: AnalysisJob) -> str:
-    return mimetypes.guess_type(job.original_path)[0] or "application/octet-stream"
+def _mime_type(target: AnalysisTarget) -> str:
+    return mimetypes.guess_type(target.original_path)[0] or "application/octet-stream"
 
 
 def _elapsed_ms(started: float) -> int:
