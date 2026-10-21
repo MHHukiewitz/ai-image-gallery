@@ -13,6 +13,7 @@ import type { ImageOut } from "../../lib/api";
 import { useGalleryQuery } from "../../lib/galleryQuery";
 import type { GalleryQuery } from "../../lib/galleryQuery";
 import { queryKeys } from "../../lib/queryKeys";
+import { useRealtimeLive } from "../../lib/realtimeStatus";
 import { ImageCard } from "./ImageCard";
 import { refetchIntervalFor } from "./polling";
 import { useAnalysisAnnouncement } from "./useAnalysisAnnouncement";
@@ -78,6 +79,7 @@ function emptyMessage(query: GalleryQuery): { title: string; description: string
 /** The gallery: every image for the URL's query, in pages that load as you scroll. */
 export function ImageGrid() {
   const [query, setQuery] = useGalleryQuery();
+  const realtimeLive = useRealtimeLive();
 
   const {
     data,
@@ -99,7 +101,7 @@ export function ImageGrid() {
     // Keeps the old results on screen while a new query loads, instead of flashing skeletons.
     placeholderData: keepPreviousData,
     staleTime: STALE_TIME_MS,
-    refetchInterval: (activeQuery) => refetchIntervalFor(activeQuery.state.data),
+    refetchInterval: (activeQuery) => refetchIntervalFor(activeQuery.state.data, realtimeLive),
   });
 
   const images = useMemo(() => uniqueById(data?.pages.flatMap((page) => page.items) ?? []), [data]);
