@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { createMemoryRouter, RouterProvider } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 import { createQueryClient } from "./queryClient";
@@ -30,8 +30,33 @@ vi.mock("../features/auth/SignUpPage", () => ({ SignUpPage: marker("SignUpPage")
 vi.mock("../features/auth/UserMenu", () => ({ UserMenu: marker("UserMenu") }));
 vi.mock("../features/search/SearchBar", () => ({ SearchBar: marker("SearchBar") }));
 vi.mock("../features/upload/UploadZone", () => ({ UploadZone: marker("UploadZone") }));
-vi.mock("../features/gallery/ImageGrid", () => ({ ImageGrid: marker("ImageGrid") }));
+// The grid marker also shows what the layout told it about the analysis channel.
+vi.mock("../features/gallery/ImageGrid", async () => {
+  const { useRealtimeLive } = await import("../lib/realtimeStatus");
+  return {
+    ImageGrid: () => (
+      <div data-feature="ImageGrid" data-realtime-live={String(useRealtimeLive())}>
+        ImageGrid
+      </div>
+    ),
+  };
+});
 vi.mock("../features/image-detail/ImageModal", () => ({ ImageModal: marker("ImageModal") }));
+
+// The layout opens the analysis channel for the signed-in user. Its own tests cover the channel.
+const { useSession, useAnalysisUpdates } = vi.hoisted(() => ({
+  useSession: vi.fn(),
+  useAnalysisUpdates: vi.fn(),
+}));
+vi.mock("../features/auth/useSession", () => ({ useSession }));
+vi.mock("../lib/useAnalysisUpdates", () => ({ useAnalysisUpdates }));
+
+const USER_ID = "00000000-0000-4000-8000-0000000087a1";
+
+beforeEach(() => {
+  useSession.mockReturnValue({ session: {}, user: { id: USER_ID }, loading: false });
+  useAnalysisUpdates.mockReturnValue(false);
+});
 
 function renderAt(path: string) {
   const router = createMemoryRouter(routes, { initialEntries: [path] });
@@ -62,6 +87,38 @@ describe("routes", () => {
       "/",
     );
     expect(within(screen.getByRole("main")).getByText("ImageGrid")).toBeInTheDocument();
+  });
+
+  it("opens the analysis channel for the signed-in user, once", () => {
+    renderAt("/");
+
+    expect(useAnalysisUpdates).toHaveBeenCalledWith(USER_ID);
+  });
+
+  it("tells the gallery whether the analysis channel is live", () => {
+    useAnalysisUpdates.mockReturnValue(true);
+    renderAt("/");
+
+    expect(document.querySelector("[data-feature=ImageGrid]")).toHaveAttribute(
+      "data-realtime-live",
+      "true",
+    );
+  });
+
+  it("tells the gallery the channel is down until it is live", () => {
+    renderAt("/");
+
+    expect(document.querySelector("[data-feature=ImageGrid]")).toHaveAttribute(
+      "data-realtime-live",
+      "false",
+    );
+  });
+
+  it("keeps the channel closed while there is no user yet", () => {
+    useSession.mockReturnValue({ session: null, user: null, loading: true });
+    renderAt("/");
+
+    expect(useAnalysisUpdates).toHaveBeenCalledWith(undefined);
   });
 
   it("renders the sign-in and sign-up pages without the layout", () => {

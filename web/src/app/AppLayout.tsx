@@ -3,12 +3,22 @@ import type { ReactNode } from "react";
 import { Link } from "react-router";
 
 import { FOCUS_COLOR, FOCUS_RING } from "../components/ui/focusRing";
+import { useSession } from "../features/auth/useSession";
 import { UserMenu } from "../features/auth/UserMenu";
 import { ActiveFilterRow } from "../features/search/ActiveFilterRow";
 import { SearchBar } from "../features/search/SearchBar";
+import { RealtimeLiveContext } from "../lib/realtimeStatus";
+import { useAnalysisUpdates } from "../lib/useAnalysisUpdates";
 
-/** Header with the app name, search and user menu, around the page in `children`. */
+/**
+ * Header with the app name, search and user menu, around the page in `children`. It also keeps the
+ * analysis channel open for the signed-in user, and tells the page whether it is live (the grid
+ * and the modal poll less while it is).
+ */
 export function AppLayout({ children }: { children: ReactNode }) {
+  const { user } = useSession();
+  const realtimeLive = useAnalysisUpdates(user?.id);
+
   return (
     <div className="flex min-h-dvh flex-col">
       <a
@@ -59,7 +69,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </header>
       <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">
         <ActiveFilterRow />
-        {children}
+        <RealtimeLiveContext value={realtimeLive}>{children}</RealtimeLiveContext>
       </main>
     </div>
   );
