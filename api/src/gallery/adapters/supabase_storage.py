@@ -6,6 +6,9 @@ The client carries the user's JWT, so the bucket policies confine every call to 
 Storage sits behind a small database connection pool on the free tier, and a burst of uploads
 and grid polls can exhaust it. It answers `429 too_many_connections`, or a 5xx, for a moment, so
 every call is retried with jittered backoff before the error reaches the caller.
+
+The database caps the objects one user may hold in the bucket (migration
+`20261020000017_storage_quota.sql`). A put past that cap raises QuotaExceededError, not retried.
 """
 
 import asyncio
@@ -25,6 +28,7 @@ from gallery.adapters.retry import (
     retry_transient,
 )
 from gallery.adapters.supabase_client import AsyncClient
+from gallery.domain.errors import QuotaExceededError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,18 @@ _BACKOFF_BASE_SECONDS = 0.2
 _BACKOFF_CAP_SECONDS = 2.0
 
 _DUPLICATE_STATUS = 409
+
+# The SQLSTATE enforce_storage_quota raises when the caller's folder holds the limit. storage-api
+# (v1.82) doesn't answer it with 429 the way PostgREST does: it sends 500 with the message
+# "database error, code: PT429" and drops the database's wording. A version that follows PostgREST
+# would send the code itself. Matching the code, not the status, keeps a gateway's own 429 or a
+# real database failure from reading as "storage full", and stops the 500 from being retried.
+_QUOTA_REFUSED_CODE = "PT429"
+_STORAGE_QUOTA_MESSAGE = "You've reached your storage limit. Delete some images to make room."
+# Unlike the daily upload quota, this one counts what the user holds, not a 24-hour window: a
+# slot is free the moment they delete an image. A day's Retry-After would tell a client to give up
+# on what one delete fixes, so this only asks it not to retry straight away.
+_STORAGE_QUOTA_RETRY_AFTER_SECONDS = 60
 
 # A cached URL is reused only while it has at least this long left, so a page that holds one
 # never shows a link that dies before the user clicks it.
@@ -105,6 +121,10 @@ def _status_of(error: BaseException) -> int | None:
         return None
 
 
+def _is_storage_quota_refusal(error: StorageApiError) -> bool:
+    return error.code == _QUOTA_REFUSED_CODE or f"code: {_QUOTA_REFUSED_CODE}" in str(error.message)
+
+
 def _transient_reason(error: Exception) -> str | None:
     """Return a short description if retrying `error` could help, else None."""
     if isinstance(error, TRANSIENT_NETWORK_ERRORS):
@@ -133,7 +153,11 @@ class SupabaseObjectStore:
         self._uniform = uniform
 
     async def put(self, path: str, data: bytes, content_type: str) -> None:
-        """Write a new object. The bucket has no update policy, so an existing key is an error."""
+        """Write a new object. The bucket has no update policy, so an existing key is an error.
+
+        Raises QuotaExceededError when the caller's folder already holds as many objects as the
+        database allows.
+        """
         attempts = 0
 
         async def upload() -> None:
@@ -142,6 +166,12 @@ class SupabaseObjectStore:
             try:
                 await self._bucket.upload(path, data, {"content-type": content_type})
             except StorageApiError as error:
+                if _is_storage_quota_refusal(error):
+                    logger.info("storage refused an upload past the object quota")
+                    raise QuotaExceededError(
+                        _STORAGE_QUOTA_MESSAGE,
+                        retry_after_seconds=_STORAGE_QUOTA_RETRY_AFTER_SECONDS,
+                    ) from error
                 # After a timeout or a 5xx we can't tell whether the object landed. Our keys
                 # carry a fresh uuid per upload, so a duplicate on a retry is our own first try.
                 if attempts > 1 and _status_of(error) == _DUPLICATE_STATUS:
