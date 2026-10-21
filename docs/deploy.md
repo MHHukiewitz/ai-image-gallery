@@ -1,12 +1,14 @@
 # Deploying to production
 
-The gallery runs at `https://gallery.hukiewitz.com` on ops-server (`ops@5.75.189.90`), next to the other sites on that box. Traefik already terminates TLS there. This stack only adds three containers and two routers:
+The gallery runs at `https://gallery.hukiewitz.com` on ops-server (`ops@5.75.189.90`), next to the other sites on that box. Traefik already terminates TLS there. This stack only adds three containers, two routers and one router middleware:
 
 | Container | Image | Reached by | Memory limit |
 |---|---|---|---|
 | `web` | nginx serving the built SPA, on port 8080 | Traefik, `Host(gallery.hukiewitz.com)` | 64 MB |
 | `api` | FastAPI on port 8000 | Traefik, same host plus `PathPrefix(/api)`, priority 100 | 768 MB |
 | `worker` | same code as `api`, runs the analysis loop | nothing: it only calls Supabase and the AI provider | 1 GB |
+
+The `api` router also carries `gallery-api-body-limit`, a Traefik `buffering` middleware with `maxRequestBodyBytes=10551296`: `MAX_UPLOAD_MB` (10 MiB) plus the API's 64 KiB multipart allowance. Traefik answers a larger request body with its own plain-text 413, so it never reaches the container. It is a second line: the API refuses the same bodies itself, in the error shape, in every deployment (#100). nginx's `client_max_body_size` doesn't help here, because `/api` never passes through nginx.
 
 The database, auth and file storage live in **Supabase Cloud**, not on the server. The design is in [architecture.md](architecture.md#10-deployment-ops-server).
 
@@ -53,7 +55,7 @@ Rules that follow from the design:
 
 - **No JWT secret in production.** Supabase Cloud signs user tokens with ES256, and the API checks them against the project's JWKS. `SUPABASE_JWT_SECRET` is never passed to a container, even if it is in the file.
 - **`RELEASE` is not set here.** `deploy.sh` exports the git SHA for each deploy. `SENTRY_ENVIRONMENT` and `VITE_SENTRY_ENVIRONMENT` are fixed to `production` in the compose file, and so are `VITE_USE_MOCKS=false` and `VITE_API_BASE=/api`.
-- **Anything in `.env.example` that isn't listed above is optional tuning**, such as `LOG_LEVEL`, `WORKER_CONCURRENCY`, `MAX_UPLOAD_MB` and `AI_TIMEOUT_SECONDS`. When a line is absent or empty, the default in `api/src/gallery/config.py` applies. If you raise `MAX_UPLOAD_MB`, raise `VITE_MAX_UPLOAD_MB` to match.
+- **Anything in `.env.example` that isn't listed above is optional tuning**, such as `LOG_LEVEL`, `WORKER_CONCURRENCY`, `MAX_UPLOAD_MB` and `AI_TIMEOUT_SECONDS`. When a line is absent or empty, the default in `api/src/gallery/config.py` applies. If you raise `MAX_UPLOAD_MB`, raise `VITE_MAX_UPLOAD_MB` and the `maxRequestBodyBytes` label in `deploy/compose.prod.yml` to match.
 - **`VITE_*` values are compiled into the bundle.** Changing one means a redeploy. It rebuilds the web image.
 
 ### Choosing the AI provider
