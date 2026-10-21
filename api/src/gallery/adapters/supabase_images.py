@@ -18,10 +18,11 @@ from datetime import datetime
 from typing import Any, Concatenate
 from uuid import UUID
 
-from postgrest import CountMethod
+from postgrest import APIError, CountMethod
 
 from gallery.adapters.retry import RetryPolicy, retry_transient, transient_database_reason
 from gallery.adapters.supabase_client import AsyncClient
+from gallery.domain.errors import QuotaExceededError
 from gallery.domain.models import (
     AllImages,
     AnalysisStatus,
@@ -39,6 +40,13 @@ _IMAGES = "images"
 _METADATA = "image_metadata"
 _DETAILS = "image_details"
 _UPLOAD_LOG = "upload_log"
+
+# The SQLSTATE enforce_upload_quota raises when an insert would pass the daily limit. PostgREST
+# answers a PT<status> state with that HTTP status and keeps the code in the error body. Matching
+# the code, not the 429, keeps a gateway's own rate limit from reading as "quota used up".
+_QUOTA_REFUSED_CODE = "PT429"
+# The window the database counts uploads over (24 hours), so the longest wait for a free slot.
+_QUOTA_WINDOW_SECONDS = 24 * 60 * 60
 
 # Two retries after the first try. The request timeout has already waited out a stalled attempt,
 # so the pauses between tries stay short.
@@ -115,24 +123,38 @@ class SupabaseImageRepo:
         self._uniform = uniform
 
     async def insert(self, image: NewImage) -> ImageRecord:
-        """Insert the image and its pending metadata, then read the record back."""
-        inserted = (
-            await self._client.table(_IMAGES)
-            .insert(
-                {
-                    "user_id": str(image.user_id),
-                    "filename": image.filename,
-                    "original_path": image.original_path,
-                    "thumbnail_path": image.thumbnail_path,
-                    "mime_type": image.mime_type,
-                    "size_bytes": image.size_bytes,
-                    "width": image.width,
-                    "height": image.height,
-                    "content_sha256": image.content_sha256,
-                }
+        """Insert the image and its pending metadata, then read the record back.
+
+        Raises QuotaExceededError when the database refuses the row because the user has reached
+        the daily quota. The service checks the quota first, so this is what's left: two uploads
+        that raced past that check, or an API whose quota settings differ from the database's.
+        """
+        try:
+            inserted = (
+                await self._client.table(_IMAGES)
+                .insert(
+                    {
+                        "user_id": str(image.user_id),
+                        "filename": image.filename,
+                        "original_path": image.original_path,
+                        "thumbnail_path": image.thumbnail_path,
+                        "mime_type": image.mime_type,
+                        "size_bytes": image.size_bytes,
+                        "width": image.width,
+                        "height": image.height,
+                        "content_sha256": image.content_sha256,
+                    }
+                )
+                .execute()
             )
-            .execute()
-        )
+        except APIError as error:
+            if error.code != _QUOTA_REFUSED_CODE:
+                raise
+            logger.info("the database refused an upload past the daily quota")
+            raise QuotaExceededError(
+                error.message or "You've reached today's upload limit. Try again tomorrow.",
+                retry_after_seconds=_QUOTA_WINDOW_SECONDS,
+            ) from error
         image_id: int = inserted.data[0]["id"]
         try:
             await (

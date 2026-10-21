@@ -107,8 +107,9 @@ class UploadService:
         already written are removed and the error is re-raised.
 
         The quota check comes after the duplicate lookup, so a bump never counts against it. Two
-        uploads that run at the same moment can both see one slot free, so a user can go over the
-        quota by up to the number of their uploads in flight.
+        uploads that run at the same moment can both see one slot free here. The database enforces
+        the same limit when it inserts the row, so the second is refused there: its objects are
+        removed and the same QuotaExceededError is raised (see the repo's `insert`).
 
         A file whose hash matches one of the user's images writes nothing to Storage: that image
         is moved to the top of the gallery and returned with `created=False`. The hash is computed
