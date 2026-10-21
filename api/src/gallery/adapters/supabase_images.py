@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _IMAGES = "images"
 _METADATA = "image_metadata"
 _DETAILS = "image_details"
+_UPLOAD_LOG = "upload_log"
 
 # Two retries after the first try. The request timeout has already waited out a stalled attempt,
 # so the pauses between tries stay short.
@@ -302,13 +303,14 @@ class SupabaseImageRepo:
 
     @_retry_idempotent("count_uploaded_since")
     async def count_uploaded_since(self, since: datetime) -> int:
-        """Count the caller's images uploaded at or after `since`.
+        """Count the caller's uploads at or after `since`, including images deleted since.
 
-        A HEAD request: PostgREST sends the count in `Content-Range`, so no rows are transferred.
-        RLS limits the count to the caller's own images.
+        It counts `upload_log`, where a trigger adds a row for every new image and nothing removes
+        one, so deleting an image doesn't free its slot. A HEAD request: PostgREST sends the count
+        in `Content-Range`, so no rows are transferred. RLS limits the count to the caller's rows.
         """
         response = (
-            await self._client.table(_IMAGES)
+            await self._client.table(_UPLOAD_LOG)
             .select("id", count=CountMethod.exact, head=True)
             .gte("uploaded_at", since.isoformat())
             .retry(False)

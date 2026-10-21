@@ -1,7 +1,8 @@
 """SupabaseImageRepo.count_uploaded_since, against mocked PostgREST HTTP and the real SDK.
 
 The count is the whole input to the daily quota, so these check the request that goes out (a HEAD
-with `count=exact`, filtered on `uploaded_at`) and how the answer is read back from Content-Range.
+on `upload_log` with `count=exact`, filtered on `uploaded_at`) and how the answer is read back from
+Content-Range. The log keeps a row after its image is deleted, which `images` would not.
 A count is a read, so a transient failure is retried.
 """
 
@@ -16,7 +17,7 @@ from gallery.adapters.supabase_client import AsyncClient, close_client, user_cli
 from gallery.adapters.supabase_images import SupabaseImageRepo
 from gallery.config import Settings
 
-IMAGES = "http://localhost:54321/rest/v1/images"
+UPLOAD_LOG = "http://localhost:54321/rest/v1/upload_log"
 SINCE = datetime(2026, 10, 19, 12, 0, tzinfo=UTC)
 
 
@@ -64,7 +65,7 @@ def counted(content_range: str) -> httpx.Response:
 async def test_counts_the_uploads_since_the_given_time_with_one_head_request(
     repo: SupabaseImageRepo, postgrest: respx.MockRouter
 ) -> None:
-    route = postgrest.head(IMAGES).mock(return_value=counted("0-0/42"))
+    route = postgrest.head(UPLOAD_LOG).mock(return_value=counted("0-0/42"))
 
     assert await repo.count_uploaded_since(SINCE) == 42
 
@@ -79,7 +80,7 @@ async def test_counts_the_uploads_since_the_given_time_with_one_head_request(
 async def test_no_uploads_in_the_window_counts_as_zero(
     repo: SupabaseImageRepo, postgrest: respx.MockRouter
 ) -> None:
-    postgrest.head(IMAGES).mock(return_value=counted("*/0"))
+    postgrest.head(UPLOAD_LOG).mock(return_value=counted("*/0"))
 
     assert await repo.count_uploaded_since(SINCE) == 0
 
@@ -87,7 +88,7 @@ async def test_no_uploads_in_the_window_counts_as_zero(
 async def test_an_answer_without_a_count_counts_as_zero(
     repo: SupabaseImageRepo, postgrest: respx.MockRouter
 ) -> None:
-    postgrest.head(IMAGES).mock(return_value=httpx.Response(200))
+    postgrest.head(UPLOAD_LOG).mock(return_value=httpx.Response(200))
 
     assert await repo.count_uploaded_since(SINCE) == 0
 
@@ -95,7 +96,7 @@ async def test_an_answer_without_a_count_counts_as_zero(
 async def test_a_count_that_fails_once_is_retried_by_the_repo_and_then_succeeds(
     repo: SupabaseImageRepo, postgrest: respx.MockRouter, pauses: Pauses
 ) -> None:
-    route = postgrest.head(IMAGES).mock(
+    route = postgrest.head(UPLOAD_LOG).mock(
         side_effect=[
             httpx.Response(503, json={"code": "PGRST002", "message": "Retrying."}),
             counted("0-0/7"),
