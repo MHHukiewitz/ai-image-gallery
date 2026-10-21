@@ -86,6 +86,10 @@ class InMemoryImageRepo:
     async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
         return {sha: self.by_hash[sha] for sha in sha256s if sha in self.by_hash}
 
+    async def count_uploaded_since(self, since: datetime) -> int:
+        # Every image these tests insert was uploaded just now, so all of them are in the window.
+        return len(self.inserted)
+
     async def bump(self, image_id: int) -> ImageRecord | None:
         record = next((r for r in self.by_hash.values() if r.id == image_id), None)
         if record is not None:
@@ -305,7 +309,9 @@ class SpyService:
     def __init__(self) -> None:
         self.received: list[int] = []
 
-    async def upload(self, user_id: UUID, raw_filename: str | None, data: bytes) -> Any:
+    async def upload(
+        self, user_id: UUID, raw_filename: str | None, data: bytes, *, email: str | None = None
+    ) -> Any:
         self.received.append(len(data))
         raise AssertionError("stop here")
 
@@ -682,3 +688,65 @@ def test_lookup_and_bump_are_documented_in_the_openapi_schema(client: TestClient
     request = client.get("/api/openapi.json").json()["components"]["schemas"]["BumpRequest"]
     assert request["properties"]["image_ids"]["minItems"] == 1
     assert request["properties"]["image_ids"]["maxItems"] == 50
+
+
+# --- the daily quota, through the route -----------------------------------------------------------
+
+
+def png_in_colour(index: int) -> bytes:
+    """A tiny PNG in a colour unlike any other in the test. PNG is lossless, so no upload is a
+    duplicate of another. (A solid-colour JPEG quantises near colours to the same bytes.)"""
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), (index % 256, index // 256, 7)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def upload_colour(client: TestClient, index: int) -> Any:
+    return post_file(client, png_in_colour(index), "photo.png", "image/png")
+
+
+def test_the_301st_upload_in_a_day_is_refused_with_429_and_a_retry_after(
+    client: TestClient, store: InMemoryObjectStore
+) -> None:
+    # No quota is set here, so this runs at the production default of 300.
+    for index in range(300):
+        assert upload_colour(client, index).status_code == 201
+    objects_before = dict(store.objects)
+
+    response = upload_colour(client, 300)
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "86400"
+    assert response.json() == {
+        "error": {
+            "code": "quota_exceeded",
+            "message": "You've reached today's upload limit of 300 images. Try again tomorrow.",
+        }
+    }
+    # The refusal comes before any Storage write.
+    assert store.objects == objects_before
+
+
+def test_a_user_who_is_not_exempt_is_limited_at_the_configured_quota(
+    make_app: Callable[..., FastAPI],
+) -> None:
+    app = make_app(UPLOAD_DAILY_QUOTA=2, UPLOAD_QUOTA_EXEMPT_EMAILS="owner@example.test")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    statuses = [upload_colour(client, index).status_code for index in range(3)]
+
+    assert statuses == [201, 201, 429]
+
+
+def test_an_exempt_email_is_never_limited_whatever_its_letter_case(
+    make_app: Callable[..., FastAPI],
+) -> None:
+    app = make_app(UPLOAD_DAILY_QUOTA=2, UPLOAD_QUOTA_EXEMPT_EMAILS="owner@example.test")
+    app.dependency_overrides[deps.get_current_user] = lambda: CurrentUser(
+        id=USER_ID, email="OWNER@Example.TEST", access_token="test-token"
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    statuses = [upload_colour(client, index).status_code for index in range(4)]
+
+    assert statuses == [201, 201, 201, 201]
