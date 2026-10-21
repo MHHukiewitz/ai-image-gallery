@@ -1,4 +1,4 @@
-"""The worker against the local stack: queue RPCs, the result cache, storage and `FakeAnalyzer`.
+"""The worker against the local stack: the jobs queue, the result cache, storage and `FakeAnalyzer`.
 
 Start the stack with `make dev-db`, then export its values and run the tests:
 
@@ -28,14 +28,22 @@ import pytest
 from PIL import Image
 
 from gallery import worker
+from gallery.adapters.analyzers import FakeAnalyzer
 from gallery.adapters.supabase_cache import SupabaseAnalysisCache
 from gallery.adapters.supabase_client import AsyncClient, close_client, service_client, user_client
 from gallery.adapters.supabase_images import SupabaseImageRepo
 from gallery.adapters.supabase_jobs import SupabaseJobQueue
 from gallery.adapters.supabase_storage import SupabaseObjectStore
 from gallery.config import Settings
-from gallery.domain.models import Analysis, AnalysisStatus, AnalysisUsage, ImageRecord, NewImage
-from gallery.services.analysis import UNDECODABLE_IMAGE_ERROR
+from gallery.domain.models import (
+    Analysis,
+    AnalysisStatus,
+    AnalysisTarget,
+    AnalysisUsage,
+    ImageRecord,
+    NewImage,
+)
+from gallery.services.analysis import ANALYZE_IMAGE, UNDECODABLE_IMAGE_ERROR, AnalysisService
 
 pytestmark = pytest.mark.integration
 
@@ -187,6 +195,37 @@ def _is_finished(record: ImageRecord) -> bool:
     return record.status in (AnalysisStatus.DONE, AnalysisStatus.FAILED)
 
 
+async def _job_row(client: AsyncClient, image_id: int) -> dict[str, Any]:
+    """The image's newest job."""
+    response = (
+        await client.table("jobs")
+        .select("id,kind,user_id,status,attempts,last_error")
+        .eq("image_id", image_id)
+        .order("id", desc=True)
+        .limit(1)
+        .single()
+        .execute()
+    )
+    row: dict[str, Any] = response.data
+    return row
+
+
+async def _wait_for_job(
+    client: AsyncClient, image_id: int, task: asyncio.Task[None], status: str
+) -> dict[str, Any]:
+    deadline = time.monotonic() + DEADLINE_SECONDS
+    while True:
+        if task.done():
+            task.result()  # surfaces a worker that crashed
+            pytest.fail("the worker stopped before the job was processed")
+        row = await _job_row(client, image_id)
+        if row["status"] == status:
+            return row
+        if time.monotonic() > deadline:
+            pytest.fail(f"the job of image {image_id} is still {row['status']}")
+        await asyncio.sleep(0.05)
+
+
 async def _metadata_row(client: AsyncClient, image_id: int) -> dict[str, Any]:
     response = (
         await client.table("image_metadata")
@@ -200,6 +239,105 @@ async def _metadata_row(client: AsyncClient, image_id: int) -> dict[str, Any]:
 
 
 # --- the pipeline -----------------------------------------------------------------------------
+
+
+async def test_an_upload_goes_through_its_job_to_done(
+    stack_settings: Settings, owner: Owner, secret_client: AsyncClient
+) -> None:
+    uploaded = await _upload(owner, _random_png())
+    queued = await _job_row(secret_client, uploaded.id)
+    assert (queued["kind"], queued["status"], queued["attempts"], queued["user_id"]) == (
+        ANALYZE_IMAGE,
+        "pending",
+        0,
+        str(owner.id),
+    )
+
+    async with _running_worker(stack_settings) as task:
+        record = await _wait_for(owner, uploaded.id, task, _is_finished)
+
+    assert record.status is AnalysisStatus.DONE
+    # The image and its job are completed in one transaction, so the job is done by now.
+    finished = await _job_row(secret_client, uploaded.id)
+    assert (finished["id"], finished["status"], finished["attempts"], finished["last_error"]) == (
+        queued["id"],
+        "done",
+        1,
+        None,
+    )
+    row = await _metadata_row(secret_client, uploaded.id)
+    assert (row["ai_processing_status"], row["attempts"], row["analyzer_id"]) == (
+        "done",
+        1,
+        FAKE_ANALYZER_ID,
+    )
+
+
+async def test_a_job_the_old_worker_finished_is_closed_without_a_second_analysis(
+    stack_settings: Settings,
+    owner: Owner,
+    secret_client: AsyncClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Between the jobs migration and the deploy, the worker from before still analyzes uploads."""
+    caplog.set_level(logging.INFO, logger="gallery.services.analysis")
+    data = _random_png()
+    uploaded = await _upload(owner, data)
+    # What that worker does: it finishes the image through the old RPC and never touches the job.
+    await secret_client.rpc(
+        "complete_analysis_job",
+        {
+            "p_image_id": uploaded.id,
+            "p_tags": ["old", "worker", "tags", "five", "here"],
+            "p_description": "Analyzed by the old worker.",
+            "p_colors": ["#112233"],
+            "p_analyzer_id": "old:worker:v1",
+        },
+    ).execute()
+    assert (await _job_row(secret_client, uploaded.id))["status"] == "pending"
+
+    async with _running_worker(stack_settings) as task:
+        await _wait_for_job(secret_client, uploaded.id, task, "done")
+
+    record = await owner.images.get(uploaded.id)
+    assert record is not None
+    assert (record.status, record.tags, record.description) == (
+        AnalysisStatus.DONE,
+        ("old", "worker", "tags", "five", "here"),
+        "Analyzed by the old worker.",
+    )
+    assert (await _metadata_row(secret_client, uploaded.id))["analyzer_id"] == "old:worker:v1"
+    lines = [r for r in caplog.records if hasattr(r, "outcome") and r.image_id == uploaded.id]
+    assert [(line.outcome, line.analysis_status) for line in lines] == [("skipped", "done")]
+    # The analyzer never saw the image, so nothing was cached for its bytes.
+    sha = hashlib.sha256(data).hexdigest()
+    assert await SupabaseAnalysisCache(secret_client).get(sha, FAKE_ANALYZER_ID) is None
+
+
+async def test_concurrent_claims_never_share_a_job(
+    stack_settings: Settings, owner: Owner, secret_client: AsyncClient
+) -> None:
+    uploads = [await _upload(owner, _random_png(), filename=f"{n}.png") for n in range(8)]
+    queue = SupabaseJobQueue(secret_client, stale_after_seconds=300, max_attempts=3)
+
+    # Six claims at once, each in its own transaction, for more slots than there are jobs.
+    claims = await asyncio.gather(*(queue.claim([ANALYZE_IMAGE], 3) for _ in range(6)))
+
+    claimed = [job for jobs in claims for job in jobs]
+    assert len({job.id for job in claimed}) == len(claimed)
+    assert len(claimed) >= len(uploads)
+    # Run what was claimed, so no job is left 'processing'.
+    service = AnalysisService(
+        queue,
+        SupabaseObjectStore(secret_client, stack_settings.STORAGE_BUCKET),
+        FakeAnalyzer(),
+        SupabaseAnalysisCache(secret_client),
+    )
+    await asyncio.gather(*(service.process(job) for job in claimed))
+    for uploaded in uploads:
+        record = await owner.images.get(uploaded.id)
+        assert record is not None
+        assert record.status is AnalysisStatus.DONE
 
 
 async def test_a_pending_upload_reaches_done_within_five_seconds(
@@ -274,14 +412,31 @@ async def test_a_corrupt_upload_fails_at_once_and_is_not_retried(
 # --- the adapters, without a worker -----------------------------------------------------------
 
 
-async def test_queue_complete_stores_the_analysis(
+async def test_queue_analysis_target_describes_the_image_of_a_job(
     stack_settings: Settings, owner: Owner, secret_client: AsyncClient
 ) -> None:
     uploaded = await _upload(owner, _random_png())
+    job = await _job_row(secret_client, uploaded.id)
     queue = SupabaseJobQueue(secret_client, stale_after_seconds=300, max_attempts=3)
 
-    await queue.complete(
-        uploaded.id,
+    assert await queue.analysis_target(job["id"]) == AnalysisTarget(
+        image_id=uploaded.id,
+        original_path=uploaded.original_path,
+        content_sha256=uploaded.content_sha256,
+        status=AnalysisStatus.PENDING,
+        error=None,
+    )
+
+
+async def test_queue_complete_analysis_stores_the_analysis_and_completes_the_job(
+    stack_settings: Settings, owner: Owner, secret_client: AsyncClient
+) -> None:
+    uploaded = await _upload(owner, _random_png())
+    job = await _job_row(secret_client, uploaded.id)
+    queue = SupabaseJobQueue(secret_client, stale_after_seconds=300, max_attempts=3)
+
+    await queue.complete_analysis(
+        job["id"],
         tags=("a", "b", "c", "d", "e"),
         description="A test.",
         colors=("#112233", "#445566"),
@@ -295,15 +450,17 @@ async def test_queue_complete_stores_the_analysis(
     assert record.description == "A test."
     assert record.colors == ("#112233", "#445566")
     assert (await _metadata_row(secret_client, uploaded.id))["analyzer_id"] == "test:model:v1"
+    assert (await _job_row(secret_client, uploaded.id))["status"] == "done"
 
 
 async def test_queue_fail_requeues_a_retryable_failure_and_ends_a_final_one(
     stack_settings: Settings, owner: Owner, secret_client: AsyncClient
 ) -> None:
     uploaded = await _upload(owner, _random_png())
+    job = await _job_row(secret_client, uploaded.id)
     queue = SupabaseJobQueue(secret_client, stale_after_seconds=300, max_attempts=3)
 
-    await queue.fail(uploaded.id, error="Provider busy", colors=["#112233"], retryable=True)
+    await queue.fail_analysis(job["id"], error="Provider busy", colors=["#112233"], retryable=True)
 
     retrying = await owner.images.get(uploaded.id)
     assert retrying is not None
@@ -312,26 +469,32 @@ async def test_queue_fail_requeues_a_retryable_failure_and_ends_a_final_one(
     assert retrying.colors == ("#112233",)
     # It waits before it can be claimed again.
     assert (await _metadata_row(secret_client, uploaded.id))["next_attempt_at"] is not None
+    assert (await _job_row(secret_client, uploaded.id))["status"] == "pending"
 
-    await queue.fail(uploaded.id, error="Key rejected", colors=["#112233"], retryable=False)
+    await queue.fail_analysis(job["id"], error="Key rejected", colors=["#112233"], retryable=False)
 
     failed = await owner.images.get(uploaded.id)
     assert failed is not None
     assert failed.status is AnalysisStatus.FAILED
     assert failed.error == "Key rejected"
+    assert (await _job_row(secret_client, uploaded.id))["status"] == "failed"
 
 
 async def test_queue_calls_for_a_deleted_image_do_not_raise(
     stack_settings: Settings, owner: Owner, secret_client: AsyncClient
 ) -> None:
     uploaded = await _upload(owner, _random_png())
+    job_id = (await _job_row(secret_client, uploaded.id))["id"]
     await owner.images.delete(uploaded.id)
     queue = SupabaseJobQueue(secret_client, stale_after_seconds=300, max_attempts=3)
 
-    await queue.complete(
-        uploaded.id, tags=["a"], description="Gone.", colors=["#000000"], analyzer_id="x:y:z"
+    assert await queue.analysis_target(job_id) is None
+    await queue.complete_analysis(
+        job_id, tags=["a"], description="Gone.", colors=["#000000"], analyzer_id="x:y:z"
     )
-    await queue.fail(uploaded.id, error="Gone", colors=[], retryable=True)
+    await queue.fail_analysis(job_id, error="Gone", colors=[], retryable=True)
+    await queue.complete(job_id)
+    await queue.fail(job_id, error="Gone", retryable=False)
 
 
 async def test_cache_round_trip(secret_client: AsyncClient) -> None:
