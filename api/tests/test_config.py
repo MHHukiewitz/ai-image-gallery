@@ -20,6 +20,8 @@ EXPECTED_SETTINGS = {
     "MAX_UPLOAD_MB",
     "MAX_IMAGE_PIXELS",
     "UPLOAD_PROCESSING_CONCURRENCY",
+    "UPLOAD_DAILY_QUOTA",
+    "UPLOAD_QUOTA_EXEMPT_EMAILS",
     "ANALYZER",
     "ANTHROPIC_API_KEY",
     "AI_EFFORT",
@@ -63,6 +65,8 @@ def test_defaults_load_with_only_required_env_vars(settings: Settings) -> None:
     assert settings.MAX_UPLOAD_MB == 10
     assert settings.MAX_IMAGE_PIXELS == 40_000_000
     assert settings.UPLOAD_PROCESSING_CONCURRENCY == 2
+    assert settings.UPLOAD_DAILY_QUOTA == 300
+    assert settings.UPLOAD_QUOTA_EXEMPT_EMAILS == ""
     assert settings.ANALYZER == "fake"
     assert settings.ANTHROPIC_API_KEY is None
     assert settings.AI_EFFORT == "low"
@@ -117,6 +121,8 @@ def test_required_settings_must_be_set(monkeypatch: pytest.MonkeyPatch, missing:
         ("SUPABASE_HTTP_TIMEOUT_SECONDS", "0"),
         ("SUPABASE_HTTP_TIMEOUT_SECONDS", "-1"),
         ("EMBEDDER", "openai"),
+        # A negative quota would refuse every upload.
+        ("UPLOAD_DAILY_QUOTA", "-1"),
     ],
 )
 def test_invalid_values_are_rejected(
@@ -149,6 +155,33 @@ def test_secrets_are_hidden_from_repr(monkeypatch: pytest.MonkeyPatch) -> None:
 
     for secret in ("test-secret", "test-anthropic", "test-ai", "test-jwt"):
         assert secret not in text
+
+
+@pytest.mark.parametrize(
+    ("raw", "exempt"),
+    [
+        ("", frozenset()),
+        ("owner@example.test", frozenset({"owner@example.test"})),
+        (
+            " Owner@Example.TEST , second@example.test,, ",
+            frozenset({"owner@example.test", "second@example.test"}),
+        ),
+        (",,", frozenset()),
+    ],
+)
+def test_exempt_emails_are_lower_cased_and_blank_entries_dropped(
+    monkeypatch: pytest.MonkeyPatch, raw: str, exempt: frozenset[str]
+) -> None:
+    monkeypatch.setenv("UPLOAD_QUOTA_EXEMPT_EMAILS", raw)
+
+    assert Settings().upload_quota_exempt_emails == exempt
+
+
+def test_a_zero_quota_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Zero means unlimited, so it must load, not be rejected as out of range."""
+    monkeypatch.setenv("UPLOAD_DAILY_QUOTA", "0")
+
+    assert Settings().UPLOAD_DAILY_QUOTA == 0
 
 
 def test_get_settings_is_cached() -> None:
