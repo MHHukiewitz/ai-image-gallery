@@ -80,7 +80,8 @@ $$;
 
 select has_table('public', 'quota_settings', 'quota_settings exists');
 select columns_are(
-  'public', 'quota_settings', array['singleton', 'daily_upload_limit'],
+  -- max_storage_objects is the storage quota's (20261020000017_storage_quota.sql).
+  'public', 'quota_settings', array['singleton', 'daily_upload_limit', 'max_storage_objects'],
   'quota_settings has exactly its columns'
 );
 select col_is_pk('public', 'quota_settings', 'singleton', 'singleton is the primary key');
