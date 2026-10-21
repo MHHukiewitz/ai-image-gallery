@@ -27,8 +27,16 @@ class InMemoryObjectStore:
         self.objects: dict[str, bytes] = {}
         self.fail_signing = False
         self.signing_calls: list[list[str]] = []
+        # Raised by the put after `puts_before_error` successful ones, like Storage refusing an
+        # object past the storage quota.
+        self.put_error: Exception | None = None
+        self.puts_before_error = 0
 
     async def put(self, path: str, data: bytes, content_type: str) -> None:
+        if self.put_error is not None:
+            if self.puts_before_error == 0:
+                raise self.put_error
+            self.puts_before_error -= 1
         self.objects[path] = data
 
     async def get(self, path: str) -> bytes:
@@ -744,6 +752,32 @@ def test_a_refusal_by_the_database_answers_the_same_429_and_leaves_no_objects(
     assert response.json() == {"error": {"code": "quota_exceeded", "message": message}}
     # The objects written before the insert are removed again.
     assert store.objects == {}
+
+
+# --- the storage quota, through the route --------------------------------------------------------
+
+
+# The original is refused when the folder is already full; the thumbnail when the original took
+# the last slot.
+@pytest.mark.parametrize("puts_before_refusal", [0, 1], ids=["original", "thumbnail"])
+def test_a_refusal_by_storage_answers_429_with_a_short_retry_after_and_leaves_no_objects(
+    client: TestClient,
+    repo: InMemoryImageRepo,
+    store: InMemoryObjectStore,
+    puts_before_refusal: int,
+) -> None:
+    message = "You've reached your storage limit. Delete some images to make room."
+    store.put_error = QuotaExceededError(message, retry_after_seconds=60)
+    store.puts_before_error = puts_before_refusal
+
+    response = upload_colour(client, 0)
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "60"
+    assert response.json() == {"error": {"code": "quota_exceeded", "message": message}}
+    # An original stored before the refusal is removed again, and no row points at it.
+    assert store.objects == {}
+    assert repo.inserted == []
 
 
 OTHER_USER_ID = UUID("3f1c9a7e-5b2d-4c8e-9a6f-0e1d2c3b4a59")
