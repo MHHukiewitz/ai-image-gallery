@@ -575,6 +575,18 @@ describe("ImageModal through the grid", () => {
     expect(searchParams(router).get("image")).toBe("2");
   });
 
+  it("keeps the Previous and Next chevrons full size in the compact desktop buttons", async () => {
+    renderGridModal([4, 9, 2], 9);
+    await screen.findByRole("dialog", { name: "photo-9.jpg" });
+
+    // From `sm` the buttons are 32 px wide with 12 px side padding. A chevron that may shrink is
+    // squeezed to 8 px there, so it must not.
+    for (const name of ["Previous image", "Next image"]) {
+      const chevron = screen.getByRole("button", { name }).querySelector("svg");
+      expect(chevron).toHaveClass("size-5", "shrink-0");
+    }
+  });
+
   it("does nothing past either end of the grid", async () => {
     const user = userEvent.setup();
     const { router } = renderGridModal([4, 9, 2], 4);
