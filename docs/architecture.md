@@ -22,7 +22,7 @@ The grading weights are: core functionality 35%, code quality 25%, UI/UX 20%, AI
 | D2 | The browser uses Supabase **only for Auth**. All data goes through **our API** (`/api/v1`). | There's one typed contract, and the UI never learns table names. The API is also the one place for validation and error mapping. |
 | D3 | The API calls Supabase **with the user's JWT** and holds **no secret key**. | RLS stays the single authorization source, even on the server path. A bug in the API can't leak another tenant's data. |
 | D4 | **Ingest is synchronous** in the API: validate, thumbnail, store, insert. **AI enrichment is asynchronous** in a worker. | The thumbnail appears instantly and the AI never blocks the upload. |
-| D5 | **The queue is `image_metadata.ai_processing_status`**, claimed through an RPC that uses `FOR UPDATE SKIP LOCKED`. | It's durable, needs no Redis, and gives one source of truth for status. |
+| D5 | **The queue is a generic `jobs` table in Postgres**, claimed through an RPC that uses `FOR UPDATE SKIP LOCKED`. Each job has a `kind`, and analysis (`analyze_image`) is the first. `image_metadata.ai_processing_status` stays the read model, which a trigger keeps in step with the job (#89). | It's durable and needs no Redis. Other background work (re-embedding, a backfill) reuses the queue by adding a kind and a handler, while the API, the web and the realtime channel keep reading one status per image. |
 | D6 | **Dominant colors are computed locally** (Pillow quantize). AI is used only for tags and the sentence. | Local extraction is free and deterministic, and more accurate than hex codes guessed by an LLM. Colors still work when the AI fails. |
 | D7 | An **`ImageAnalyzer` port** with three adapters: a **native Anthropic adapter**, an **OpenAI-compatible adapter** (production calls Claude through OpenRouter with it, and the benchmark compares models with it) and a **`FakeAnalyzer`**. An optional, best-effort **`TagVerifier`** stage (Jev, #50) can then filter and merge tags. A **`TextEmbedder` port** (#63) has a local **fastembed** adapter running `BAAI/bge-small-en-v1.5` and a fake. The worker embeds each analyzed image's description and tags and stores the vector with **pgvector in the same Postgres**, so there is no vector-DB service. | Production calls Claude through OpenRouter, because the Anthropic key arrives after the deadline. The native adapter's official SDK gives typed structured outputs, typed errors and refusal handling. The OpenAI-compatible adapter keeps the comparison honest and keeps another vendor one config change away. Tests and offline dev need no key. The embedding model is small (about 65 MB, ONNX on the CPU, no torch), so semantic matching needs no second API, no key and no extra service, and the API never loads it. |
 | D8 | **Search and similarity live in Postgres SQL functions** (`security invoker`). | They run under RLS (so search is automatically per-user), paginate in the DB and need no vector DB. |
@@ -83,16 +83,18 @@ sequenceDiagram
   A->>A: verify JWT · sniff JPEG/PNG · ≤10 MB · ≤40 MP · EXIF-orient · 300×300 WebP · sha256
   A->>S: upload {uid}/{uuid}/original.ext + thumb.webp (as user)
   A->>S: insert images + image_metadata(status=pending) (as user)
+  Note over S: a trigger queues an analyze_image job
   A-->>B: 201 ImageOut (thumbnail_url, status=pending)
   loop adaptive poll 1s → 3s when idle
-    W->>S: rpc claim_analysis_jobs(n)
+    W->>S: rpc claim_jobs([analyze_image], n)
   end
+  W->>S: rpc analysis_target(job)
   W->>S: download original
   W->>W: dominant colors (local)
   W->>S: ai_cache lookup (sha256, analyzer_id)
   W->>L: image (≤1024px JPEG) + JSON schema prompt
   L-->>W: {tags[5..10], description}
-  W->>S: upsert ai_cache · update metadata status=done
+  W->>S: upsert ai_cache · rpc complete_analysis (metadata done + job done, one transaction)
   B->>A: GET page every 2s while any visible item is pending
 ```
 
@@ -101,9 +103,19 @@ sequenceDiagram
 - If the DB insert fails after the objects were uploaded, the API deletes the objects.
 - The adapter retries transient errors itself (429, 5xx, timeouts): 2 retries with exponential backoff. Invalid JSON gets one repair attempt.
 - Every Supabase database request has an 8-second limit (`SUPABASE_HTTP_TIMEOUT_SECONDS`). Idempotent calls (reads, lookups, the bump and reanalyze RPCs) retry up to 3 times with full-jitter backoff on timeouts, connection errors, 429 and 5xx. Inserts are never retried. Storage calls retry up to 4 times on 429, 5xx and network errors, so an upload burst doesn't turn into false failures.
-- At the job level, `attempts < 3` sends the job back to `pending` with `next_attempt_at`. After that it becomes `failed`, with `last_error` set and the colors kept.
-- A crashed worker leaves jobs in `processing`. After 5 minutes, `claim_analysis_jobs` reclaims them.
-- The UI shows "Analysis failed · Retry". Retry calls `POST /images/{id}/reanalyze`, which calls the `request_reanalysis` RPC.
+- At the job level, `attempts < 3` sends the job back to `pending` with a backoff of 10 s, 20 s, 40 s … in `run_after`. After that it becomes `failed`, with `last_error` set and the colors kept. The image shows the same state.
+- A crashed worker leaves jobs in `processing`. After 5 minutes, `claim_jobs` reclaims them, or fails them with "Timed out" once they're out of attempts.
+- The UI shows "Analysis failed · Retry". Retry calls `POST /images/{id}/reanalyze`, which calls the `request_reanalysis` RPC. It resets the image to `pending` and queues a job, or resets the one that waits. While the job is `processing` it refuses.
+- A job whose image is gone, or whose analysis already ended outside the job, is closed with that outcome and without calling the analyzer.
+
+**The jobs queue**
+
+- **The worker** claims only the kinds it has a handler for (`claim_jobs(kinds, …)`) and runs each job through the handler of its kind. A worker never takes a kind it can't run, such as one a migration starts queueing before the worker that runs it is deployed. A job of an unregistered kind can only come from a broken queue, and it fails for good.
+- **One open job per kind and image:** a partial unique index allows one `pending` or `processing` job per `(kind, image_id)`. Finished jobs stay as a record.
+- **The read model:** a trigger mirrors each `analyze_image` job's status, attempts, backoff and error onto `image_metadata`. It never reopens a finished analysis (done or failed); only an upload or `request_reanalysis` does. So an `analyze_image` job for a finished image is a no-op, and re-analyzing means reopening the image.
+- **Lock order:** a function that changes a job and its image locks the job first, as a claim does.
+- **Adding a kind:** register a handler in `worker.py`, queue its jobs (from a migration, a trigger or an RPC), and add an RPC for what the handler writes, if the generic `complete_job` and `fail_job` aren't enough.
+- **The switch from the old queue (#89):** production applies the migration on merge, and the old worker keeps running on `claim_analysis_jobs`, `complete_analysis_job` and `fail_analysis_job` until the deploy. Those RPCs and the old queue columns stay until a later migration drops them. Uploads in that window still go to `pending`, so the old worker analyzes them while their jobs wait, and the new worker closes those jobs without analyzing again. A backfill queues every analysis that is pending or processing when the migration applies.
 
 ### Duplicates and bumps
 
@@ -147,7 +159,7 @@ image_metadata(
   description text, tags text[] not null default '{}', colors varchar(7)[] not null default '{}',
   ai_processing_status varchar(20) not null default 'pending'
     check (ai_processing_status in ('pending','processing','done','failed')),
-  attempts int not null default 0, next_attempt_at timestamptz, claimed_at timestamptz,
+  attempts int not null default 0, next_attempt_at timestamptz, claimed_at timestamptz,  -- mirrored from the job
   last_error text, analyzer_id text,
   search_vector tsvector,                    -- trigger-maintained: tags (weight A) + description (B)
   colors_lab float8[],                       -- trigger-maintained from colors (CIE Lab, 3×3 flattened)
@@ -155,6 +167,16 @@ image_metadata(
 )
 ai_cache(content_sha256 char(64), analyzer_id text, result jsonb not null,
          created_at timestamptz default now(), primary key (content_sha256, analyzer_id))
+jobs(
+  id bigint generated always as identity primary key,
+  kind text not null,                        -- 'analyze_image' so far
+  image_id bigint references images on delete cascade,      -- null for a kind about no image
+  user_id uuid references auth.users on delete cascade,
+  status text not null default 'pending' check (status in ('pending','processing','done','failed')),
+  attempts int not null default 0, run_after timestamptz not null default now(),
+  claimed_at timestamptz, last_error text,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+)
 ```
 
 **Indexes**
@@ -162,7 +184,10 @@ ai_cache(content_sha256 char(64), analyzer_id text, result jsonb not null,
 - `images(user_id, uploaded_at desc, id desc)`
 - GIN on `search_vector`
 - GIN on `tags`
-- Partial index on `image_metadata(next_attempt_at) where status = 'pending'`
+- Partial index on `image_metadata(next_attempt_at) where status = 'pending'`, used by the old queue only
+- Partial unique index on `jobs(kind, image_id) where status in ('pending','processing')`
+- Partial index on `jobs(created_at, id) where status in ('pending','processing')`, the claim's order
+- `jobs(image_id)`, for the cascade from `images`
 
 **RLS policies.** All tables have RLS enabled. Policies are per command and `to authenticated`, using `(select auth.uid()) = user_id` with matching `with check`:
 
@@ -171,14 +196,15 @@ ai_cache(content_sha256 char(64), analyzer_id text, result jsonb not null,
 | `images` | `select`, `insert`, `delete` for the owner |
 | `image_metadata` | `select` for the owner. `insert` only with `status = 'pending'` and only for an owned image. **No `update` for users.** The worker updates through the secret key, and users go through `request_reanalysis(image_id)`, which is `security definer` and checks ownership. |
 | `ai_cache` | RLS on, with **no policies**, so only the secret key can access it |
+| `jobs` | RLS on, with **no policies**. `service_role` can only read it directly, and changes it through the queue RPCs. Users queue analysis jobs indirectly, through the upload trigger and `request_reanalysis`. |
 
 **Storage.** A private bucket named `images`. The `select`, `insert` and `delete` policies on `storage.objects` require `(storage.foldername(name))[1] = (select auth.uid())::text`.
 
 **Queue RPCs.** These are `security definer` and `grant execute` to `service_role` only:
 
-- `claim_analysis_jobs(n)`
-- `complete_analysis_job(...)`
-- `fail_analysis_job(...)`
+- Generic: `claim_jobs(kinds, n, stale_after_seconds, max_attempts)`, `complete_job(job_id)` and `fail_job(job_id, error, max_attempts, retryable)`
+- `analyze_image`: `analysis_target(job_id)`, `complete_analysis(job_id, ...)` (metadata and job in one transaction) and `fail_analysis(job_id, ...)` (keeps the colors)
+- The old queue's `claim_analysis_jobs(n)`, `complete_analysis_job(...)` and `fail_analysis_job(...)` stay until a later migration drops them
 
 **Search RPCs.** These are `security invoker`:
 
@@ -387,7 +413,7 @@ ai-image-gallery/
 | **Uptime** | Uptime Kuma (already on ops-server) checks `/api/health?deep=1`. |
 
 **Deliberately not used:**
-- **Dagster or another orchestrator:** per-image, latency-sensitive jobs don't fit a batch orchestrator, and re-analyzing everything is one `update … set status = 'pending'`.
+- **Dagster or another orchestrator:** per-image, latency-sensitive jobs don't fit a batch orchestrator, and re-analyzing everything is two statements: reopen the images (`update … set status = 'pending'`) and queue their jobs.
 - **MLflow / W&B:** we train nothing, and `analyzer_id` on each row plus the benchmark record which model and prompt produced what.
 - **Langfuse:** its traces would carry users' photos.
 - **PostHog:** it needs GDPR consent and adds no value for grading.
