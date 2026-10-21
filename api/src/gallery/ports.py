@@ -1,6 +1,7 @@
 """Protocols that services depend on. Adapters implement them, so services never import SDKs."""
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 
 from gallery.domain.models import (
@@ -38,6 +39,10 @@ class ImageRepo(Protocol):
     async def delete(self, image_id: int) -> ImageRecord | None: ...
 
     async def request_reanalysis(self, image_id: int) -> bool: ...
+
+    # Counts the caller's images uploaded at or after `since`. Only the number comes back, which is
+    # all the daily quota needs. Bumps don't move `uploaded_at`, so they don't count.
+    async def count_uploaded_since(self, since: datetime) -> int: ...
 
 
 class ObjectStore(Protocol):
