@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 
 import { toast } from "../../components/ui/toast";
 import {
@@ -33,8 +33,13 @@ export const DUPLICATE_DISMISS_MS = 8000;
 
 const FALLBACK_ERROR = "The upload failed. Please try again.";
 
+/** The API's code for a refused upload once the user's daily quota is used up. */
+const QUOTA_EXCEEDED = "quota_exceeded";
+
 export interface Uploads {
   items: readonly UploadItem[];
+  /** True once the daily quota has refused an upload. Nothing new starts until the user asks. */
+  paused: boolean;
   addFiles: (files: readonly File[]) => void;
   cancel: (id: string) => void;
   retry: (id: string) => void;
@@ -48,12 +53,20 @@ export interface Uploads {
  * grid's cache at once and the image lists are refetched. Failures toast the server's message, and
  * finished items clear themselves after 3 s (8 s for a duplicate). Leaving the page aborts
  * whatever is still going.
+ *
+ * When the daily quota refuses an upload, that file fails with the server's message, the queue
+ * stops starting uploads and one toast says why. Nothing retries the refused file on its own. The
+ * queue starts again only when the user retries a file or drops new ones.
  */
 export function useUploads(): Uploads {
   const queryClient = useQueryClient();
   const [items, dispatch] = useReducer(uploadQueueReducer, initialUploadQueue);
   const controllers = useRef(new Map<string, AbortController>());
   const dismissTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  // Read by the callbacks and the fill effect, which can't wait for a re-render. The state only
+  // exists so the summary shows the pause.
+  const pausedRef = useRef(false);
+  const [paused, setPaused] = useState(false);
   // Not a UUID: `crypto.randomUUID` is missing on a phone that opens the dev server over http.
   const nextId = useRef(0);
 
@@ -96,7 +109,15 @@ export function useUploads(): Uploads {
           // A cancel already moved the item on, and the user doesn't need a toast for it.
           if (controller.signal.aborted) return;
           const message = error instanceof ApiError ? error.message : FALLBACK_ERROR;
-          toast.error(`${item.file.name}: ${message}`);
+          if (error instanceof ApiError && error.code === QUOTA_EXCEEDED) {
+            // Every other upload would be refused too, so the queue waits. One toast says why,
+            // not one per file: the uploads already in flight are refused in turn.
+            if (!pausedRef.current) toast.error(message);
+            pausedRef.current = true;
+            setPaused(true);
+          } else {
+            toast.error(`${item.file.name}: ${message}`);
+          }
           dispatch({ type: "fail", id: item.id, error: message });
         });
     },
@@ -195,6 +216,7 @@ export function useUploads(): Uploads {
   // Fills free slots whenever the queue changes. The controllers map guards against starting
   // the same item twice if the effect runs again before the `start` action has been applied.
   useEffect(() => {
+    if (pausedRef.current) return;
     for (const item of nextToStart(items, uploadConcurrency(window))) {
       if (!controllers.current.has(item.id)) startUpload(item);
     }
@@ -230,15 +252,22 @@ export function useUploads(): Uploads {
     };
   }, []);
 
+  // A new drop or a retry is the user asking to upload again, so the queue starts up.
+  const resume = useCallback(() => {
+    pausedRef.current = false;
+    setPaused(false);
+  }, []);
+
   const addFiles = useCallback(
     (files: readonly File[]) => {
       if (files.length === 0) return;
+      resume();
       const drop = files.map((file) => ({ id: `upload-${nextId.current++}`, file }));
       // Held back as "checking" until the drop has been compared with the gallery.
       dispatch({ type: "add", items: drop, status: "checking" });
       void checkDrop(drop);
     },
-    [checkDrop],
+    [checkDrop, resume],
   );
 
   const cancel = useCallback((id: string) => {
@@ -247,7 +276,13 @@ export function useUploads(): Uploads {
     controllers.current.get(id)?.abort();
   }, []);
 
-  const retry = useCallback((id: string) => dispatch({ type: "retry", id }), []);
+  const retry = useCallback(
+    (id: string) => {
+      resume();
+      dispatch({ type: "retry", id });
+    },
+    [resume],
+  );
 
   const dismiss = useCallback((id: string) => {
     clearTimeout(dismissTimers.current.get(id));
@@ -255,5 +290,5 @@ export function useUploads(): Uploads {
     dispatch({ type: "dismiss", id });
   }, []);
 
-  return { items, addFiles, cancel, retry, dismiss };
+  return { items, paused, addFiles, cancel, retry, dismiss };
 }
