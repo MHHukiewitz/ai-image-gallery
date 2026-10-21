@@ -82,7 +82,7 @@ function PageDropTarget({ visible, onDrop }: { visible: boolean; onDrop: DropHan
  * the queue of files in flight below it. A file dragged anywhere over the page can be dropped.
  */
 export function UploadZone() {
-  const { items, addFiles, cancel, retry, dismiss } = useUploads();
+  const { items, paused, addFiles, cancel, retry, dismiss } = useUploads();
   const galleryIsEmpty = useGalleryIsEmpty();
   const { open: openImage } = useSelectedImage();
 
@@ -141,6 +141,7 @@ export function UploadZone() {
       <PageDropTarget visible={isDragGlobal} onDrop={handleDrop} />
       <UploadQueue
         items={items}
+        paused={paused}
         onCancel={cancel}
         onRetry={retry}
         onDismiss={dismiss}

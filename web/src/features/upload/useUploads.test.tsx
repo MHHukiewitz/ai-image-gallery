@@ -750,3 +750,88 @@ describe("useUploads: concurrency", () => {
     expect(statuses(result.current.items)).toEqual(["uploading", "uploading", "queued"]);
   });
 });
+
+describe("useUploads when the daily quota refuses an upload", () => {
+  const LIMIT_MESSAGE = "You've reached today's upload limit of 300 images. Try again tomorrow.";
+  const refused = () => new ApiError(429, "quota_exceeded", LIMIT_MESSAGE);
+
+  it("fails the file with the server's message, stops the queue and toasts once", async () => {
+    const { result } = setup();
+    await drop(result, files(5));
+
+    await act(async () => pending[0].reject(refused()));
+    // The other upload was already in flight, so it is refused too: still one toast.
+    await act(async () => pending[1].reject(refused()));
+    await settle();
+
+    expect(statuses(result.current.items)).toEqual([
+      "error",
+      "error",
+      "queued",
+      "queued",
+      "queued",
+    ]);
+    expect(result.current.items[0]).toMatchObject({ status: "error", error: LIMIT_MESSAGE });
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(toast.error).toHaveBeenCalledWith(LIMIT_MESSAGE);
+    expect(result.current.paused).toBe(true);
+    // Nothing is sent again, and nothing new starts on its own.
+    expect(uploadImage).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the queue as paused, with the files still waiting", async () => {
+    const { result } = setup();
+    await drop(result, files(4));
+    await act(async () => pending[0].reject(refused()));
+    await act(async () => pending[1].reject(refused()));
+
+    expect(summarizeQueue(result.current.items, result.current.paused)).toBe(
+      "Upload limit reached, 2 images waiting, 2 uploads failed",
+    );
+  });
+
+  it("doesn't pause for a failure that is not the quota", async () => {
+    const { result } = setup();
+    await drop(result, files(3));
+
+    await act(async () => pending[0].reject(new ApiError(413, "too_large", "Too big.")));
+
+    expect(result.current.paused).toBe(false);
+    expect(pending.map((upload) => upload.file.name)).toEqual([
+      "photo-1.png",
+      "photo-2.png",
+      "photo-3.png",
+    ]);
+    expect(toast.error).toHaveBeenCalledWith("photo-1.png: Too big.");
+  });
+
+  it("starts the queue again when the user retries a file", async () => {
+    const { result } = setup();
+    await drop(result, files(5));
+    await act(async () => pending[0].reject(refused()));
+    await act(async () => pending[1].reject(refused()));
+
+    act(() => result.current.retry(result.current.items[0].id));
+
+    expect(result.current.paused).toBe(false);
+    expect(result.current.items[0]).toMatchObject({ status: "uploading", progress: 0 });
+    expect(pending[2].file.name).toBe("photo-1.png");
+    await act(async () => pending[2].resolve(image(9, "photo-1.png")));
+    expect(result.current.items[0].status).toBe("done");
+  });
+
+  it("starts the queue again when the user drops new files", async () => {
+    const { result } = setup();
+    await drop(result, files(4));
+    await act(async () => pending[0].reject(refused()));
+    await act(async () => pending[1].reject(refused()));
+
+    await drop(result, [new File(["y"], "later.png", { type: "image/png" })]);
+
+    expect(result.current.paused).toBe(false);
+    expect(pending.slice(2).map((upload) => upload.file.name)).toEqual([
+      "photo-3.png",
+      "photo-4.png",
+    ]);
+  });
+});
