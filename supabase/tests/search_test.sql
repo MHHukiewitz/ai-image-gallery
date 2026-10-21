@@ -16,7 +16,7 @@
 
 begin;
 
-select plan(115);
+select plan(118);
 
 -- Fixtures (as postgres, which bypasses RLS) ----------------------------------------------------
 
@@ -122,9 +122,16 @@ select is(
     'color max delta E ' || public.search_color_max_delta_e(),
     'exact tag boost ' || public.search_exact_tag_boost()
   ),
-  'tag weight 0.7, color weight 0.3, similar min score 0.1, color max delta E 25, exact tag boost 0.5',
+  'tag weight 0.7, color weight 0.3, similar min score 0.3, color max delta E 25, exact tag boost 0.5',
   'the tunables hold the values architecture.md section 8 documents'
 );
+
+-- These cases check the scoring formula, so some of their matches score at or below the floor that
+-- "Find similar" applies (search_similar_min_score, 20261020000016). Lower it for this transaction,
+-- which rolls back, so every case stays visible. The floor's own cases follow the similar-images section.
+create or replace function public.search_similar_min_score() returns float8
+language sql immutable parallel safe
+return 0.1;
 
 -- Color conversion ------------------------------------------------------------------------------
 
@@ -552,6 +559,40 @@ select is_empty(
   $$select id from public.similar_images(current_setting('tests.target_id')::bigint, 0)$$,
   'lim 0 returns nothing'
 );
+
+-- The real floor: only matches that share meaning, not just colors ------------------------------
+
+reset role;
+create or replace function public.search_similar_min_score() returns float8
+language sql immutable parallel safe
+return 0.3;
+set local role authenticated;
+
+select ok(
+  not exists (
+    select 1 from public.similar_images(current_setting('tests.target_id')::bigint, 100)
+    where filename = 'twin.jpg'
+  ),
+  'at the 0.3 floor, an image with the same palette and no shared tags (0.3) is hidden'
+);
+select ok(
+  exists (
+    select 1 from public.similar_images(current_setting('tests.target_id')::bigint, 100)
+    where filename = 'close.jpg'
+  ),
+  'at the 0.3 floor, an image sharing 3 tags and similar colors is still found'
+);
+select ok(
+  (select bool_and(score > 0.3) from public.similar_images(current_setting('tests.target_id')::bigint, 100)),
+  'at the 0.3 floor, every result scores above 0.3'
+);
+
+-- Back to the formula floor for the sections below.
+reset role;
+create or replace function public.search_similar_min_score() returns float8
+language sql immutable parallel safe
+return 0.1;
+set local role authenticated;
 
 -- Color search (as A) ----------------------------------------------------------------------------
 
