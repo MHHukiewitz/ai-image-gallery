@@ -99,7 +99,10 @@ services:
       - traefik.http.routers.gallery-api.priority=100
       - traefik.http.routers.gallery-api.entrypoints=web,websecure
       - traefik.http.routers.gallery-api.tls.certresolver=le
-      - traefik.http.routers.gallery-api.middlewares=security-headers@file
+      - traefik.http.routers.gallery-api.middlewares=gallery-api-body-limit,security-headers@file
+      # A second line behind the API's own body limit (#100): MAX_UPLOAD_MB (10) MiB plus the
+      # API's 64 KiB multipart allowance, 10 * 1048576 + 65536. Raise it with MAX_UPLOAD_MB.
+      - traefik.http.middlewares.gallery-api-body-limit.buffering.maxRequestBodyBytes=10551296
       - traefik.http.services.gallery-api.loadbalancer.server.port=8000
 
   # Same image as the API. The command starts the analysis loop instead of uvicorn.
