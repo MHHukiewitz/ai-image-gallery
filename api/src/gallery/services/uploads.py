@@ -77,7 +77,7 @@ class UploadService:
         signed_url_ttl: int,
         processing_slots: asyncio.Semaphore | None = None,
         daily_quota: int = 0,
-        quota_exempt_emails: frozenset[str] = frozenset(),
+        quota_exempt_user_ids: frozenset[UUID] = frozenset(),
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._repo = repo
@@ -92,27 +92,17 @@ class UploadService:
         )
         # 0 turns the quota off. It is the default, so a caller that sets none is never refused.
         self._daily_quota = daily_quota
-        # Lower-cased here too, so raw addresses from a caller still match in any letter case.
-        self._quota_exempt_emails = frozenset(
-            email.strip().lower() for email in quota_exempt_emails
-        )
+        self._quota_exempt_user_ids = quota_exempt_user_ids
         # Injectable so a test can move the 24-hour window without waiting.
         self._clock = clock
 
-    async def upload(
-        self,
-        user_id: UUID,
-        raw_filename: str | None,
-        data: bytes,
-        *,
-        email: str | None = None,
-    ) -> UploadResult:
+    async def upload(self, user_id: UUID, raw_filename: str | None, data: bytes) -> UploadResult:
         """Store one image for `user_id`, or bump it if they already have it.
 
         Raises InvalidImageError, before anything is stored, when the file isn't an acceptable
         JPEG or PNG. Raises QuotaExceededError, also before anything is stored, when the user has
-        reached the daily quota and `email` isn't exempt. If a storage or database step fails, the
-        objects already written are removed and the error is re-raised.
+        reached the daily quota and isn't exempt. If a storage or database step fails, the objects
+        already written are removed and the error is re-raised.
 
         The quota check comes after the duplicate lookup, so a bump never counts against it. Two
         uploads that run at the same moment can both see one slot free, so a user can go over the
@@ -145,7 +135,7 @@ class UploadService:
             # The image was deleted between the lookup and the bump, so there is nothing to move.
             # Store the file as a new image, as if the lookup had found nothing.
 
-        await self._check_daily_quota(email)
+        await self._check_daily_quota(user_id)
 
         # The bucket policy and the database CHECK both require this {user_id}/ prefix.
         folder = f"{user_id}/{uuid4()}"
@@ -207,16 +197,18 @@ class UploadService:
         matches = await self._repo.find_by_sha256(list(dict.fromkeys(sha256s)))
         return {sha256: record.id for sha256, record in matches.items()}
 
-    async def _check_daily_quota(self, email: str | None) -> None:
+    async def _check_daily_quota(self, user_id: UUID) -> None:
         """Raise QuotaExceededError when the caller's uploads in the last 24 hours reach the quota.
 
-        Nothing is counted with the quota off, or for an exempt address, so the database is not
-        asked at all. A count that fails propagates: the upload is refused rather than let through
-        unchecked.
+        Uploads of images deleted since still count. Nothing is counted with the quota off, or for
+        an exempt user, so the database is not asked at all. A count that fails propagates: the
+        upload is refused rather than let through unchecked.
         """
         if self._daily_quota == 0:
             return
-        if email and email.strip().lower() in self._quota_exempt_emails:
+        # The id comes from the verified token. An email would not do: unless sign-ups confirm
+        # addresses, anyone can sign up with one they don't own.
+        if user_id in self._quota_exempt_user_ids:
             return
         used = await self._repo.count_uploaded_since(self._clock() - _QUOTA_WINDOW)
         if used < self._daily_quota:

@@ -71,7 +71,7 @@ services:
       SIGNED_URL_TTL_SECONDS: ${SIGNED_URL_TTL_SECONDS:-}
       # The daily upload quota is enforced here, in the API. Empty means the app's default (#77).
       UPLOAD_DAILY_QUOTA: ${UPLOAD_DAILY_QUOTA:-}
-      UPLOAD_QUOTA_EXEMPT_EMAILS: ${UPLOAD_QUOTA_EXEMPT_EMAILS:-}
+      UPLOAD_QUOTA_EXEMPT_USER_IDS: ${UPLOAD_QUOTA_EXEMPT_USER_IDS:-}
     healthcheck:
       # urllib instead of curl, because the image has no curl. start_interval probes quickly
       # while the container starts, so Traefik (which routes only to healthy containers) picks

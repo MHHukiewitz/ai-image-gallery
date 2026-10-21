@@ -1,10 +1,11 @@
 """Environment configuration. Every setting the API and worker read is declared here."""
 
 from functools import lru_cache
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
+from uuid import UUID
 
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -44,11 +45,13 @@ class Settings(BaseSettings):
     # How many uploads are decoded at once. Each holds tens of megabytes while it decodes.
     UPLOAD_PROCESSING_CONCURRENCY: int = Field(default=2, ge=1)
     # Each new image costs AI credit, so one user may add this many in a rolling 24 h window. 0
-    # turns the quota off. Re-uploading an image the user already has doesn't count.
+    # turns the quota off. Re-uploading an image the user already has doesn't count, and deleting
+    # an image doesn't give its slot back.
     UPLOAD_DAILY_QUOTA: int = Field(default=300, ge=0)
-    # Comma-separated. Matched without regard to letter case. Keep the real addresses in the
-    # server's .env: the repo is public.
-    UPLOAD_QUOTA_EXEMPT_EMAILS: str = ""
+    # Users who skip the quota, as comma-separated user ids (UUIDs). An id, unlike an email, can't
+    # be claimed by signing up with it. A malformed entry stops the app at startup. Keep the real
+    # ids in the server's .env: the repo is public.
+    UPLOAD_QUOTA_EXEMPT_USER_IDS: Annotated[frozenset[UUID], NoDecode] = frozenset()
 
     # --- AI analysis (worker) ---
     ANALYZER: Literal["fake", "anthropic", "openai_compat"] = "fake"
@@ -106,11 +109,13 @@ class Settings(BaseSettings):
             self.SUPABASE_JWKS_URL = f"{base_url}/auth/v1/.well-known/jwks.json"
         return self
 
-    @property
-    def upload_quota_exempt_emails(self) -> frozenset[str]:
-        """The exempt addresses, lower-cased and stripped, with blank entries dropped."""
-        entries = (entry.strip().lower() for entry in self.UPLOAD_QUOTA_EXEMPT_EMAILS.split(","))
-        return frozenset(entry for entry in entries if entry)
+    @field_validator("UPLOAD_QUOTA_EXEMPT_USER_IDS", mode="before")
+    @classmethod
+    def _split_user_ids(cls, value: object) -> object:
+        """Split the comma-separated list and drop blank entries. Pydantic then parses each id."""
+        if isinstance(value, str):
+            return [entry.strip() for entry in value.split(",") if entry.strip()]
+        return value
 
 
 @lru_cache

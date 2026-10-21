@@ -1,5 +1,6 @@
 import re
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
@@ -21,7 +22,7 @@ EXPECTED_SETTINGS = {
     "MAX_IMAGE_PIXELS",
     "UPLOAD_PROCESSING_CONCURRENCY",
     "UPLOAD_DAILY_QUOTA",
-    "UPLOAD_QUOTA_EXEMPT_EMAILS",
+    "UPLOAD_QUOTA_EXEMPT_USER_IDS",
     "ANALYZER",
     "ANTHROPIC_API_KEY",
     "AI_EFFORT",
@@ -66,7 +67,7 @@ def test_defaults_load_with_only_required_env_vars(settings: Settings) -> None:
     assert settings.MAX_IMAGE_PIXELS == 40_000_000
     assert settings.UPLOAD_PROCESSING_CONCURRENCY == 2
     assert settings.UPLOAD_DAILY_QUOTA == 300
-    assert settings.UPLOAD_QUOTA_EXEMPT_EMAILS == ""
+    assert not settings.UPLOAD_QUOTA_EXEMPT_USER_IDS
     assert settings.ANALYZER == "fake"
     assert settings.ANTHROPIC_API_KEY is None
     assert settings.AI_EFFORT == "low"
@@ -157,24 +158,50 @@ def test_secrets_are_hidden_from_repr(monkeypatch: pytest.MonkeyPatch) -> None:
         assert secret not in text
 
 
+OWNER_ID = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
+SECOND_ID = UUID("3f1c9a7e-5b2d-4c8e-9a6f-0e1d2c3b4a59")
+
+
 @pytest.mark.parametrize(
     ("raw", "exempt"),
     [
         ("", frozenset()),
-        ("owner@example.test", frozenset({"owner@example.test"})),
-        (
-            " Owner@Example.TEST , second@example.test,, ",
-            frozenset({"owner@example.test", "second@example.test"}),
-        ),
+        (str(OWNER_ID), frozenset({OWNER_ID})),
+        (f" {OWNER_ID} , {SECOND_ID},, ", frozenset({OWNER_ID, SECOND_ID})),
+        # Letter case doesn't matter in a UUID.
+        (str(OWNER_ID).upper(), frozenset({OWNER_ID})),
         (",,", frozenset()),
+        (" ", frozenset()),
     ],
 )
-def test_exempt_emails_are_lower_cased_and_blank_entries_dropped(
-    monkeypatch: pytest.MonkeyPatch, raw: str, exempt: frozenset[str]
+def test_exempt_user_ids_are_parsed_and_blank_entries_dropped(
+    monkeypatch: pytest.MonkeyPatch, raw: str, exempt: frozenset[UUID]
 ) -> None:
-    monkeypatch.setenv("UPLOAD_QUOTA_EXEMPT_EMAILS", raw)
+    monkeypatch.setenv("UPLOAD_QUOTA_EXEMPT_USER_IDS", raw)
 
-    assert Settings().upload_quota_exempt_emails == exempt
+    parsed = Settings().UPLOAD_QUOTA_EXEMPT_USER_IDS
+
+    assert parsed == exempt
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "owner@example.test",
+        f"{OWNER_ID}, owner@example.test",
+        str(OWNER_ID)[:-1],
+        f"{OWNER_ID};{SECOND_ID}",
+    ],
+    ids=["an-email", "an-email-after-an-id", "a-digit-short", "semicolons"],
+)
+def test_a_malformed_exempt_user_id_fails_validation(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    """The app reads its settings at startup, so a typo stops it instead of exempting nobody."""
+    monkeypatch.setenv("UPLOAD_QUOTA_EXEMPT_USER_IDS", raw)
+
+    with pytest.raises(ValidationError, match="UPLOAD_QUOTA_EXEMPT_USER_IDS"):
+        Settings()
 
 
 def test_a_zero_quota_is_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
