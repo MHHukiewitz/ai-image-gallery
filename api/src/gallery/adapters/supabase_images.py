@@ -18,6 +18,8 @@ from datetime import datetime
 from typing import Any, Concatenate
 from uuid import UUID
 
+from postgrest import CountMethod
+
 from gallery.adapters.retry import RetryPolicy, retry_transient, transient_database_reason
 from gallery.adapters.supabase_client import AsyncClient
 from gallery.domain.models import (
@@ -297,6 +299,22 @@ class SupabaseImageRepo:
         response = await self._client.table(_IMAGES).delete().eq("id", image_id).execute()
         # Empty when the row was deleted by someone else between the read and the delete.
         return record if response.data else None
+
+    @_retry_idempotent("count_uploaded_since")
+    async def count_uploaded_since(self, since: datetime) -> int:
+        """Count the caller's images uploaded at or after `since`.
+
+        A HEAD request: PostgREST sends the count in `Content-Range`, so no rows are transferred.
+        RLS limits the count to the caller's own images.
+        """
+        response = (
+            await self._client.table(_IMAGES)
+            .select("id", count=CountMethod.exact, head=True)
+            .gte("uploaded_at", since.isoformat())
+            .retry(False)
+            .execute()
+        )
+        return response.count or 0
 
     @_retry_idempotent("request_reanalysis")
     async def request_reanalysis(self, image_id: int) -> bool:
