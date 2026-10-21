@@ -19,6 +19,7 @@ from gallery.domain.errors import (
     GalleryError,
     InvalidImageError,
     NotFoundError,
+    QuotaExceededError,
 )
 
 
@@ -84,6 +85,14 @@ def assert_error_shape(response_json: dict[str, object], code: str, message: str
             413,
             "too_many_pixels",
             "The image has more than 40 megapixels.",
+        ),
+        (
+            QuotaExceededError(
+                "You've reached today's upload limit of 300 images. Try again tomorrow.", 86400
+            ),
+            429,
+            "quota_exceeded",
+            "You've reached today's upload limit of 300 images. Try again tomorrow.",
         ),
         (AuthError("Missing bearer token."), 401, "unauthorized", "Missing bearer token."),
         (AuthError(), 401, "unauthorized", "Not authenticated."),
@@ -154,6 +163,17 @@ def test_a_permanent_analyzer_failure_is_logged_as_an_error(
     assert response.status_code == 502
     [record] = [r for r in caplog.records if r.getMessage() == "image analyzer failed"]
     assert record.levelno == logging.ERROR
+
+
+def test_a_quota_refusal_tells_the_client_when_to_try_again(
+    client_for: Callable[[Exception], TestClient],
+) -> None:
+    error = QuotaExceededError("You've reached today's upload limit.", retry_after_seconds=86400)
+
+    response = client_for(error).get("/boom")
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "86400"
 
 
 def test_an_auth_error_asks_the_client_to_send_a_bearer_token(

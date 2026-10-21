@@ -15,7 +15,13 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from gallery.api.schemas import ErrorDetail, ErrorResponse
-from gallery.domain.errors import AnalyzerError, AuthError, InvalidImageError, NotFoundError
+from gallery.domain.errors import (
+    AnalyzerError,
+    AuthError,
+    InvalidImageError,
+    NotFoundError,
+    QuotaExceededError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,16 @@ async def _handle_not_found(request: Request, exc: NotFoundError) -> JSONRespons
 async def _handle_invalid_image(request: Request, exc: InvalidImageError) -> JSONResponse:
     status_code = 413 if exc.code in _PAYLOAD_TOO_LARGE_CODES else 415
     return _error_response(status_code, exc.code, exc.message)
+
+
+async def _handle_quota_exceeded(request: Request, exc: QuotaExceededError) -> JSONResponse:
+    # The message is for the user; Retry-After is the wait, in seconds, that the client may honour.
+    return _error_response(
+        429,
+        "quota_exceeded",
+        exc.message,
+        headers={"Retry-After": str(exc.retry_after_seconds)},
+    )
 
 
 async def _handle_auth(request: Request, exc: AuthError) -> JSONResponse:
@@ -93,6 +109,7 @@ def register_error_handlers(app: FastAPI) -> None:
     """Make every error the app can raise, even a bug, answer in the error shape."""
     app.add_exception_handler(NotFoundError, _handle_not_found)
     app.add_exception_handler(InvalidImageError, _handle_invalid_image)
+    app.add_exception_handler(QuotaExceededError, _handle_quota_exceeded)
     app.add_exception_handler(AuthError, _handle_auth)
     app.add_exception_handler(AnalyzerError, _handle_analyzer)
     app.add_exception_handler(NotImplementedError, _handle_not_implemented)
