@@ -1,7 +1,8 @@
-"""Upload use case: validate, thumbnail, store and record one image, or bump a duplicate.
+"""Upload use case: validate, thumbnail, strip, store and record one image, or bump a duplicate.
 
 Ingest is synchronous, so the thumbnail is ready when the request returns. The AI analysis is not
-part of it: the new row starts `pending` and the worker picks it up.
+part of it: the new row starts `pending` and the worker picks it up. The original is stored without
+its location and camera metadata (see domain/metadata.py), its pixels untouched.
 
 An image the user already has is not stored again. Uploading it moves the existing image to the top
 of their gallery instead.
@@ -19,6 +20,7 @@ from uuid import UUID, uuid4
 from gallery.config import get_settings
 from gallery.domain.errors import NotFoundError, QuotaExceededError
 from gallery.domain.filenames import display_filename
+from gallery.domain.metadata import strip_metadata
 from gallery.domain.models import ImageRecord, NewImage
 from gallery.domain.thumbnails import make_thumbnail
 from gallery.domain.validation import ImageInfo, inspect_image
@@ -118,6 +120,11 @@ class UploadService:
         covers the common case, and a unique constraint isn't possible while production already
         holds duplicates.
 
+        The stored original has its metadata stripped, and `size_bytes` is its stored size. A file
+        the stripper can't parse is refused with InvalidImageError, never stored as it came.
+        `content_sha256` stays the hash of the uploaded bytes, because the web client hashes the
+        file it drops to find duplicates.
+
         Once the row is inserted the upload has succeeded. If the thumbnail then can't be
         signed, the URL is an empty string: failing the request would report an error for an
         image that was saved, and the user would upload it again.
@@ -125,7 +132,7 @@ class UploadService:
         # Decoding is CPU-bound, so it runs in a thread to keep other requests moving. A burst of
         # photos would otherwise decode side by side and exhaust the container's memory.
         async with self._processing_slots:
-            info, thumbnail, content_sha256 = await asyncio.to_thread(self._process, data)
+            info, thumbnail, original, content_sha256 = await asyncio.to_thread(self._process, data)
 
         existing = (await self._repo.find_by_sha256([content_sha256])).get(content_sha256)
         if existing is not None:
@@ -142,7 +149,7 @@ class UploadService:
         original_path = f"{folder}/original.{info.extension}"
         thumbnail_path = f"{folder}/{_THUMBNAIL_FILENAME}"
         try:
-            await self._store.put(original_path, data, info.mime_type)
+            await self._store.put(original_path, original, info.mime_type)
             await self._store.put(thumbnail_path, thumbnail, _THUMBNAIL_MIME_TYPE)
             record = await self._repo.insert(
                 NewImage(
@@ -151,7 +158,7 @@ class UploadService:
                     original_path=original_path,
                     thumbnail_path=thumbnail_path,
                     mime_type=info.mime_type,
-                    size_bytes=len(data),
+                    size_bytes=len(original),
                     width=info.width,
                     height=info.height,
                     content_sha256=content_sha256,
@@ -220,9 +227,11 @@ class UploadService:
     async def _result(self, record: ImageRecord, *, created: bool) -> UploadResult:
         return UploadResult(record, await self._sign_thumbnail(record.thumbnail_path), created)
 
-    def _process(self, data: bytes) -> tuple[ImageInfo, bytes, str]:
+    def _process(self, data: bytes) -> tuple[ImageInfo, bytes, bytes, str]:
+        """Return the image's description, its thumbnail, the original to store, and its hash."""
         info = inspect_image(data, max_bytes=self.max_bytes, max_pixels=self._max_pixels)
-        return info, make_thumbnail(data), hashlib.sha256(data).hexdigest()
+        original = strip_metadata(data, info.mime_type)
+        return info, make_thumbnail(data), original, hashlib.sha256(data).hexdigest()
 
     async def _sign_thumbnail(self, thumbnail_path: str) -> str:
         """Return the signed thumbnail URL, or "" when it can't be signed.

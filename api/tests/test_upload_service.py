@@ -13,7 +13,7 @@ from uuid import UUID
 
 import pytest
 from PIL import Image
-from PIL.ExifTags import Base
+from PIL.ExifTags import GPS, IFD, Base
 
 from gallery.domain.errors import InvalidImageError, NotFoundError, QuotaExceededError
 from gallery.domain.models import AnalysisStatus, ImageRecord, NewImage
@@ -420,6 +420,75 @@ async def test_a_successful_upload_deletes_nothing(
     await service.upload(USER_ID, "beach.jpg", a_jpeg())
 
     assert store.deleted == []
+
+
+# --- metadata ------------------------------------------------------------------------------
+
+
+def a_phone_photo(image_format: str = "JPEG") -> bytes:
+    """A photo with its position and camera in EXIF, turned a quarter turn, as phones write it."""
+    exif = Image.Exif()
+    exif[Base.Orientation] = 6
+    exif[Base.Make] = "TestCam"
+    exif[IFD.GPSInfo] = {GPS.GPSLatitudeRef: "N", GPS.GPSLatitude: (52.0, 31.0, 12.0)}
+    return encode(Image.new("RGB", (640, 480), "teal"), image_format, exif=exif)
+
+
+@pytest.mark.parametrize(
+    ("image_format", "mime_type"), [("JPEG", "image/jpeg"), ("PNG", "image/png")]
+)
+async def test_the_stored_original_has_no_gps_and_keeps_its_orientation(
+    service: UploadService,
+    store: InMemoryObjectStore,
+    repo: InMemoryImageRepo,
+    image_format: str,
+    mime_type: str,
+) -> None:
+    data = a_phone_photo(image_format)
+
+    record = (await service.upload(USER_ID, "beach.jpg", data)).record
+
+    stored, content_type = store.objects[record.original_path]
+    assert content_type == mime_type
+    with Image.open(BytesIO(stored)) as original:
+        exif = original.getexif()
+        assert exif.get_ifd(IFD.GPSInfo) == {}
+        assert dict(exif) == {Base.Orientation: 6}
+    [new_image] = repo.inserted
+    assert new_image.size_bytes == len(stored) < len(data)
+    # The hash is still the uploaded file's, which is what the web client hashes for duplicates.
+    assert new_image.content_sha256 == hashlib.sha256(data).hexdigest()
+    assert (new_image.width, new_image.height) == (480, 640)
+
+
+async def test_a_re_upload_of_the_same_photo_still_finds_the_stripped_one(
+    service: UploadService, store: InMemoryObjectStore, repo: InMemoryImageRepo
+) -> None:
+    data = a_phone_photo()
+    repo.existing[hashlib.sha256(data).hexdigest()] = an_existing_image(data)
+
+    result = await service.upload(USER_ID, "beach.jpg", data)
+
+    assert result.created is False
+    assert store.objects == {}
+
+
+async def test_an_original_the_stripper_cannot_parse_is_refused_and_nothing_is_stored(
+    service: UploadService,
+    store: InMemoryObjectStore,
+    repo: InMemoryImageRepo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(data: bytes, mime_type: str) -> bytes:
+        raise InvalidImageError("corrupt", "The image can't be decoded.")
+
+    monkeypatch.setattr("gallery.services.uploads.strip_metadata", refuse)
+
+    with pytest.raises(InvalidImageError):
+        await service.upload(USER_ID, "beach.jpg", a_phone_photo())
+
+    assert store.objects == {}
+    assert repo.inserted == []
 
 
 def an_existing_image(data: bytes, image_id: int = 7) -> ImageRecord:
