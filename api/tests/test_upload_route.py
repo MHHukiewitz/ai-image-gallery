@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from PIL import Image
+from PIL.ExifTags import Base
 
 from gallery.api import deps
 from gallery.api.body_limit import MULTIPART_ALLOWANCE_BYTES
@@ -93,7 +94,9 @@ class InMemoryImageRepo:
             raise self.insert_error
         self.inserted.append(image)
         record = make_record(41 + len(self.inserted), image)
+        # The real repo finds an image by either hash.
         self.by_hash[image.content_sha256] = record
+        self.by_hash[image.stored_sha256] = record
         self.order.insert(0, record.id)
         return record
 
@@ -548,6 +551,47 @@ def test_uploading_a_file_the_caller_already_has_answers_200_with_the_same_image
     assert len(store.objects) == 2
 
 
+def a_phone_jpeg(make: str = "TestCam") -> bytes:
+    """A JPEG with camera EXIF. Another `make` gives the same picture with other metadata."""
+    exif = Image.Exif()
+    exif[Base.Make] = make
+    buffer = BytesIO()
+    Image.new("RGB", (640, 480), "teal").save(buffer, format="JPEG", exif=exif)
+    return buffer.getvalue()
+
+
+def stored_original(store: InMemoryObjectStore) -> bytes:
+    """The one original in the store: the file a user gets when they download it."""
+    [original] = [data for path, data in store.objects.items() if "/original." in path]
+    return original
+
+
+def test_a_downloaded_original_uploaded_again_answers_200_with_the_same_image(
+    client: TestClient, repo: InMemoryImageRepo, store: InMemoryObjectStore
+) -> None:
+    first = post_file(client, a_phone_jpeg())
+    downloaded = stored_original(store)
+    assert sha256_of(downloaded) != sha256_of(a_phone_jpeg())
+
+    second = post_file(client, downloaded, "downloaded.jpg")
+
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert second.json()["id"] == first.json()["id"]
+    assert len(repo.inserted) == 1
+
+
+def test_the_same_picture_with_other_metadata_answers_200_with_the_same_image(
+    client: TestClient, repo: InMemoryImageRepo
+) -> None:
+    first = post_file(client, a_phone_jpeg(make="TestCam"))
+
+    second = post_file(client, a_phone_jpeg(make="OtherCam"), "retagged.jpg")
+
+    assert (first.status_code, second.status_code) == (201, 200)
+    assert second.json()["id"] == first.json()["id"]
+    assert len(repo.inserted) == 1
+
+
 def test_a_duplicate_upload_moves_the_image_to_the_top(
     client: TestClient, repo: InMemoryImageRepo
 ) -> None:
@@ -630,6 +674,7 @@ def seed_images(repo: InMemoryImageRepo, count: int) -> list[int]:
                 width=640,
                 height=480,
                 content_sha256=f"{image_id:064x}",
+                stored_sha256=f"{image_id:064x}",
             ),
         )
         repo.by_hash[record.content_sha256] = record
@@ -765,6 +810,19 @@ def test_lookup_maps_known_hashes_to_image_ids_and_leaves_out_unknown_ones(
 
     assert response.status_code == 200
     assert response.json() == {"matches": {sha256_of(a_jpeg()): x["id"]}}
+
+
+def test_lookup_finds_an_image_by_the_hash_of_its_stored_file(
+    client: TestClient, store: InMemoryObjectStore
+) -> None:
+    # The browser hashes the file it drops. For a downloaded original, that is the stored file.
+    image = post_file(client, a_phone_jpeg()).json()
+    downloaded_hash = sha256_of(stored_original(store))
+
+    response = client.post(LOOKUP_URL, json={"content_sha256": [downloaded_hash]})
+
+    assert response.status_code == 200
+    assert response.json() == {"matches": {downloaded_hash: image["id"]}}
 
 
 def test_lookup_with_no_matches_is_an_empty_map(client: TestClient) -> None:

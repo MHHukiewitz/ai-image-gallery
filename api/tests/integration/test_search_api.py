@@ -160,6 +160,7 @@ async def _add_analysed_image(
             width=640,
             height=480,
             content_sha256=uuid.uuid4().hex * 2,
+            stored_sha256=uuid.uuid4().hex * 2,
         )
     )
     # The trigger derives search_vector and colors_lab from these, so the search sees them.

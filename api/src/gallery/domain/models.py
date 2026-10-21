@@ -61,7 +61,11 @@ class NewImage:
     size_bytes: int
     width: int
     height: int
+    # The hash of the file as uploaded. The web client computes the same one to find duplicates.
     content_sha256: str
+    # The hash of the file as stored, without its metadata. The same picture with other metadata
+    # strips to the same bytes, so this finds duplicates by image content.
+    stored_sha256: str
 
 
 @dataclass(frozen=True, slots=True)

@@ -147,6 +147,7 @@ async def _add_image(owner: Tenant, *, filename: str = "photo.png") -> int:
             width=640,
             height=480,
             content_sha256=uuid.uuid4().hex * 2,
+            stored_sha256=uuid.uuid4().hex * 2,
         )
     )
     return record.id
