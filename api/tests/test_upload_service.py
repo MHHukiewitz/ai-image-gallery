@@ -373,6 +373,22 @@ async def test_a_failed_insert_deletes_both_objects_and_raises_the_same_error(
     assert sorted(path.rpartition("/")[2] for path in deleted) == ["original.jpg", "thumb.webp"]
 
 
+async def test_an_insert_the_database_refuses_for_the_quota_removes_both_objects(
+    service: UploadService, repo: InMemoryImageRepo, store: InMemoryObjectStore
+) -> None:
+    # The quota check passed, then the database refused the row: two uploads raced for one slot.
+    refusal = QuotaExceededError("You've reached today's upload limit.", retry_after_seconds=86400)
+    repo.fail_with = refusal
+
+    with pytest.raises(QuotaExceededError) as excinfo:
+        await service.upload(USER_ID, "beach.jpg", a_jpeg())
+
+    assert excinfo.value is refusal
+    assert store.objects == {}
+    [deleted] = store.deleted
+    assert sorted(path.rpartition("/")[2] for path in deleted) == ["original.jpg", "thumb.webp"]
+
+
 async def test_a_failed_thumbnail_upload_also_removes_the_original(
     service: UploadService, repo: InMemoryImageRepo, store: InMemoryObjectStore
 ) -> None:

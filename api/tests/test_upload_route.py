@@ -14,6 +14,7 @@ from gallery.api import deps
 from gallery.api.deps import CurrentUser
 from gallery.api.routes import uploads
 from gallery.config import Settings
+from gallery.domain.errors import QuotaExceededError
 from gallery.domain.models import AnalysisStatus, ImageRecord, NewImage
 
 USER_ID = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
@@ -75,8 +76,12 @@ class InMemoryImageRepo:
         self.inserted: list[NewImage] = []
         self.by_hash: dict[str, ImageRecord] = {}
         self.order: list[int] = []
+        # Raised by the next insert, like the database refusing a row.
+        self.insert_error: Exception | None = None
 
     async def insert(self, image: NewImage) -> ImageRecord:
+        if self.insert_error is not None:
+            raise self.insert_error
         self.inserted.append(image)
         record = make_record(41 + len(self.inserted), image)
         self.by_hash[image.content_sha256] = record
@@ -723,6 +728,22 @@ def test_the_301st_upload_in_a_day_is_refused_with_429_and_a_retry_after(
     }
     # The refusal comes before any Storage write.
     assert store.objects == objects_before
+
+
+def test_a_refusal_by_the_database_answers_the_same_429_and_leaves_no_objects(
+    client: TestClient, repo: InMemoryImageRepo, store: InMemoryObjectStore
+) -> None:
+    # The API's own check passed, then the database refused the row: another upload took the slot.
+    message = "You've reached today's upload limit of 300 images. Try again tomorrow."
+    repo.insert_error = QuotaExceededError(message, retry_after_seconds=86400)
+
+    response = upload_colour(client, 0)
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "86400"
+    assert response.json() == {"error": {"code": "quota_exceeded", "message": message}}
+    # The objects written before the insert are removed again.
+    assert store.objects == {}
 
 
 OTHER_USER_ID = UUID("3f1c9a7e-5b2d-4c8e-9a6f-0e1d2c3b4a59")
