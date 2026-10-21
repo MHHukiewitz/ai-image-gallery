@@ -35,6 +35,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(health.router)
     app.include_router(uploads.router)
+    uploads.document_upload_form(app)
     app.include_router(images.router)
     register_error_handlers(app)
     app.add_middleware(BodyLimitMiddleware)
