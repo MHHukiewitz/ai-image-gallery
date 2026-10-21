@@ -39,7 +39,7 @@ def get_upload_service(
         max_pixels=settings.MAX_IMAGE_PIXELS,
         signed_url_ttl=settings.SIGNED_URL_TTL_SECONDS,
         daily_quota=settings.UPLOAD_DAILY_QUOTA,
-        quota_exempt_emails=settings.upload_quota_exempt_emails,
+        quota_exempt_user_ids=settings.UPLOAD_QUOTA_EXEMPT_USER_IDS,
     )
 
 
@@ -69,7 +69,7 @@ async def upload_image(
     # One byte more than the limit is enough for the service to see the file is too large, and
     # it keeps a huge upload from being read into memory.
     data = await file.read(service.max_bytes + 1)
-    result = await service.upload(user.id, file.filename, data, email=user.email)
+    result = await service.upload(user.id, file.filename, data)
     if not result.created:
         response.status_code = 200
     return to_image_out(result.record, thumbnail_url=result.thumbnail_url)

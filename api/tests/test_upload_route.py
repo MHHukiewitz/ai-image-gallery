@@ -309,9 +309,7 @@ class SpyService:
     def __init__(self) -> None:
         self.received: list[int] = []
 
-    async def upload(
-        self, user_id: UUID, raw_filename: str | None, data: bytes, *, email: str | None = None
-    ) -> Any:
+    async def upload(self, user_id: UUID, raw_filename: str | None, data: bytes) -> Any:
         self.received.append(len(data))
         raise AssertionError("stop here")
 
@@ -727,10 +725,13 @@ def test_the_301st_upload_in_a_day_is_refused_with_429_and_a_retry_after(
     assert store.objects == objects_before
 
 
+OTHER_USER_ID = UUID("3f1c9a7e-5b2d-4c8e-9a6f-0e1d2c3b4a59")
+
+
 def test_a_user_who_is_not_exempt_is_limited_at_the_configured_quota(
     make_app: Callable[..., FastAPI],
 ) -> None:
-    app = make_app(UPLOAD_DAILY_QUOTA=2, UPLOAD_QUOTA_EXEMPT_EMAILS="owner@example.test")
+    app = make_app(UPLOAD_DAILY_QUOTA=2, UPLOAD_QUOTA_EXEMPT_USER_IDS=str(OTHER_USER_ID))
     client = TestClient(app, raise_server_exceptions=False)
 
     statuses = [upload_colour(client, index).status_code for index in range(3)]
@@ -738,15 +739,26 @@ def test_a_user_who_is_not_exempt_is_limited_at_the_configured_quota(
     assert statuses == [201, 201, 429]
 
 
-def test_an_exempt_email_is_never_limited_whatever_its_letter_case(
-    make_app: Callable[..., FastAPI],
-) -> None:
-    app = make_app(UPLOAD_DAILY_QUOTA=2, UPLOAD_QUOTA_EXEMPT_EMAILS="owner@example.test")
-    app.dependency_overrides[deps.get_current_user] = lambda: CurrentUser(
-        id=USER_ID, email="OWNER@Example.TEST", access_token="test-token"
-    )
+def test_an_exempt_user_id_is_never_limited(make_app: Callable[..., FastAPI]) -> None:
+    app = make_app(UPLOAD_DAILY_QUOTA=2, UPLOAD_QUOTA_EXEMPT_USER_IDS=f"{OTHER_USER_ID}, {USER_ID}")
     client = TestClient(app, raise_server_exceptions=False)
 
     statuses = [upload_colour(client, index).status_code for index in range(4)]
 
     assert statuses == [201, 201, 201, 201]
+
+
+def test_an_email_no_longer_exempts_anyone(
+    make_app: Callable[..., FastAPI], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server .env that still lists the owner's email doesn't exempt whoever signs in with it."""
+    monkeypatch.setenv("UPLOAD_QUOTA_EXEMPT_EMAILS", "owner@example.test")
+    app = make_app(UPLOAD_DAILY_QUOTA=2)
+    app.dependency_overrides[deps.get_current_user] = lambda: CurrentUser(
+        id=USER_ID, email="owner@example.test", access_token="test-token"
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+
+    statuses = [upload_colour(client, index).status_code for index in range(3)]
+
+    assert statuses == [201, 201, 429]

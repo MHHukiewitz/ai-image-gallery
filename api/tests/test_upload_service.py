@@ -843,8 +843,7 @@ async def test_a_rejected_upload_gives_its_slot_back(
 # --- daily quota ---------------------------------------------------------------------------
 
 QUOTA = 300
-OWNER_EMAIL = "owner@example.test"
-OTHER_EMAIL = "other@example.test"
+OTHER_USER_ID = UUID("3f1c9a7e-5b2d-4c8e-9a6f-0e1d2c3b4a59")
 
 
 def quota_service(
@@ -852,7 +851,7 @@ def quota_service(
     store: InMemoryObjectStore,
     *,
     daily_quota: int = QUOTA,
-    exempt: frozenset[str] = frozenset(),
+    exempt: frozenset[UUID] = frozenset(),
 ) -> UploadService:
     return UploadService(
         repo,
@@ -861,7 +860,7 @@ def quota_service(
         max_pixels=MAX_PIXELS,
         signed_url_ttl=SIGNED_URL_TTL,
         daily_quota=daily_quota,
-        quota_exempt_emails=exempt,
+        quota_exempt_user_ids=exempt,
         clock=lambda: repo.now,
     )
 
@@ -878,11 +877,11 @@ async def test_the_300th_upload_in_a_day_passes_and_the_301st_is_refused(
     data = tiny_jpeg()
     repo.uploaded_at = [repo.now] * (QUOTA - 1)
     # The 300th upload is a real one: it is stored and counted like any other.
-    await service.upload(USER_ID, "beach.jpg", data, email=OTHER_EMAIL)
+    await service.upload(USER_ID, "beach.jpg", data)
     stored_before_refusal = dict(store.objects)
 
     with pytest.raises(QuotaExceededError) as refused:
-        await service.upload(USER_ID, "beach.jpg", data, email=OTHER_EMAIL)
+        await service.upload(USER_ID, "beach.jpg", data)
 
     assert len(repo.inserted) == 1
     assert len(repo.uploaded_at) == QUOTA
@@ -901,7 +900,7 @@ async def test_the_quota_is_counted_over_the_last_24_hours_from_now(
     repo.uploaded_at = [repo.now - timedelta(hours=23, minutes=59)] * QUOTA
 
     with pytest.raises(QuotaExceededError):
-        await service.upload(USER_ID, "beach.jpg", tiny_jpeg(), email=OTHER_EMAIL)
+        await service.upload(USER_ID, "beach.jpg", tiny_jpeg())
 
     assert repo.count_calls == [repo.now - timedelta(hours=24)]
 
@@ -912,7 +911,7 @@ async def test_uploads_older_than_24_hours_do_not_count(
     service = quota_service(repo, store)
     repo.uploaded_at = [repo.now - timedelta(hours=25)] * QUOTA
 
-    result = await service.upload(USER_ID, "beach.jpg", tiny_jpeg(), email=OTHER_EMAIL)
+    result = await service.upload(USER_ID, "beach.jpg", tiny_jpeg())
 
     assert result.created
 
@@ -923,11 +922,11 @@ async def test_a_slot_frees_up_once_its_upload_is_24_hours_old(
     service = quota_service(repo, store)
     repo.uploaded_at = [repo.now] * QUOTA
     with pytest.raises(QuotaExceededError):
-        await service.upload(USER_ID, "beach.jpg", tiny_jpeg(), email=OTHER_EMAIL)
+        await service.upload(USER_ID, "beach.jpg", tiny_jpeg())
 
     repo.now += timedelta(hours=24, seconds=1)
 
-    assert (await service.upload(USER_ID, "beach.jpg", tiny_jpeg(), email=OTHER_EMAIL)).created
+    assert (await service.upload(USER_ID, "beach.jpg", tiny_jpeg())).created
 
 
 async def test_a_duplicate_is_bumped_at_the_quota_and_never_counts(
@@ -938,42 +937,40 @@ async def test_a_duplicate_is_bumped_at_the_quota_and_never_counts(
     repo.existing[hashlib.sha256(data).hexdigest()] = an_existing_image(data)
     repo.uploaded_at = [repo.now] * (QUOTA - 1)
 
-    bumped = await service.upload(USER_ID, "beach.jpg", data, email=OTHER_EMAIL)
+    bumped = await service.upload(USER_ID, "beach.jpg", data)
 
     assert bumped.created is False
     # The bump is answered before the quota is looked at, and it adds no upload.
     assert repo.count_calls == []
     assert len(repo.uploaded_at) == QUOTA - 1
     # That leaves the 300th slot for a new image.
-    assert (await service.upload(USER_ID, "logo.png", a_png(), email=OTHER_EMAIL)).created
+    assert (await service.upload(USER_ID, "logo.png", a_png())).created
     # Now at the quota, a duplicate still bumps, and a new image is refused.
-    assert (await service.upload(USER_ID, "beach.jpg", data, email=OTHER_EMAIL)).created is False
+    assert (await service.upload(USER_ID, "beach.jpg", data)).created is False
     with pytest.raises(QuotaExceededError):
-        await service.upload(USER_ID, "noise.png", noise("PNG"), email=OTHER_EMAIL)
+        await service.upload(USER_ID, "noise.png", noise("PNG"))
 
 
-@pytest.mark.parametrize("email", [OWNER_EMAIL, "OWNER@Example.TEST", "  Owner@example.test  "])
-async def test_an_exempt_email_is_never_limited_in_any_letter_case(
-    repo: InMemoryImageRepo, store: InMemoryObjectStore, email: str
+async def test_an_exempt_user_is_never_limited(
+    repo: InMemoryImageRepo, store: InMemoryObjectStore
 ) -> None:
-    service = quota_service(repo, store, exempt=frozenset({OWNER_EMAIL}))
+    service = quota_service(repo, store, exempt=frozenset({OTHER_USER_ID, USER_ID}))
     repo.uploaded_at = [repo.now] * (QUOTA * 2)
 
-    result = await service.upload(USER_ID, "beach.jpg", tiny_jpeg(), email=email)
+    result = await service.upload(USER_ID, "beach.jpg", tiny_jpeg())
 
     assert result.created
     assert repo.count_calls == []
 
 
-@pytest.mark.parametrize("email", [OTHER_EMAIL, None], ids=["not-listed", "no-email"])
-async def test_an_address_that_is_not_exempt_is_limited(
-    repo: InMemoryImageRepo, store: InMemoryObjectStore, email: str | None
+async def test_a_user_who_is_not_on_the_exempt_list_is_limited(
+    repo: InMemoryImageRepo, store: InMemoryObjectStore
 ) -> None:
-    service = quota_service(repo, store, exempt=frozenset({OWNER_EMAIL}))
+    service = quota_service(repo, store, exempt=frozenset({OTHER_USER_ID}))
     repo.uploaded_at = [repo.now] * QUOTA
 
     with pytest.raises(QuotaExceededError):
-        await service.upload(USER_ID, "beach.jpg", tiny_jpeg(), email=email)
+        await service.upload(USER_ID, "beach.jpg", tiny_jpeg())
 
 
 async def test_a_quota_of_zero_means_unlimited_and_never_asks_the_database(
@@ -982,7 +979,7 @@ async def test_a_quota_of_zero_means_unlimited_and_never_asks_the_database(
     service = quota_service(repo, store, daily_quota=0)
     repo.uploaded_at = [repo.now] * 5000
 
-    result = await service.upload(USER_ID, "beach.jpg", tiny_jpeg(), email=OTHER_EMAIL)
+    result = await service.upload(USER_ID, "beach.jpg", tiny_jpeg())
 
     assert result.created
     assert repo.count_calls == []
@@ -995,7 +992,7 @@ async def test_a_quota_of_one_says_image_in_the_singular(
     repo.uploaded_at = [repo.now]
 
     with pytest.raises(QuotaExceededError) as refused:
-        await service.upload(USER_ID, "beach.jpg", tiny_jpeg(), email=OTHER_EMAIL)
+        await service.upload(USER_ID, "beach.jpg", tiny_jpeg())
 
     assert refused.value.message == (
         "You've reached today's upload limit of 1 image. Try again tomorrow."
@@ -1009,7 +1006,7 @@ async def test_a_count_that_fails_refuses_the_upload_and_stores_nothing(
     repo.fail_count = ConnectionError("database is down")
 
     with pytest.raises(ConnectionError):
-        await service.upload(USER_ID, "beach.jpg", tiny_jpeg(), email=OTHER_EMAIL)
+        await service.upload(USER_ID, "beach.jpg", tiny_jpeg())
 
     assert store.objects == {}
     assert repo.inserted == []
