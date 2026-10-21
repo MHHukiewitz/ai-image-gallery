@@ -123,9 +123,9 @@ sequenceDiagram
 
 ### Duplicates and bumps
 
-A file the user already has is never stored twice. The API hashes the upload (`content_sha256`) and looks the hash up among the caller's own images **before** any Storage write. On a match, `bump_image` moves that image to the top of the gallery and the API answers `200` with the existing image. Otherwise it stores the file as usual and answers `201`. Two identical uploads that race can both get through, and the web client's batching covers the usual case.
+A file the user already has is never stored twice. The API hashes the upload twice: as it came (`content_sha256`), and without its metadata, as it will be stored (`stored_sha256`, #113). It looks both up among the caller's own images **before** any Storage write. An image matches when the upload's own hash equals its `content_sha256`, or the stripped hash equals its `stored_sha256`. So the same picture with other metadata is a duplicate, because stripping copies the image data byte for byte. A downloaded original uploaded again is one too, because stripping a stripped file changes nothing. On a match, `bump_image` moves that image to the top of the gallery and the API answers `200` with the existing image. Otherwise it stores the file as usual and answers `201`. Two identical uploads that race can both get through, and the web client's batching covers the usual case.
 
-For a whole drop, the web client hashes the files, asks for the matches with `POST /api/v1/images/lookup` in batches of 50, and bumps the duplicates with `POST /api/v1/images/bump`, also in batches of 50. A batch bump is one RPC and one signed-URL call. The ids are stamped in array order, so the last one ends up on top. Ids that aren't the caller's are left out of the response. A bump changes only the sort time (`last_uploaded_at`), so images stay immutable for users.
+For a whole drop, the web client hashes the files as they are, and asks for the matches with `POST /api/v1/images/lookup` in batches of 50. The lookup checks both columns, so a downloaded original is found before it is uploaded. The web client then bumps the duplicates with `POST /api/v1/images/bump`, also in batches of 50. A batch bump is one RPC and one signed-URL call. The ids are stamped in array order, so the last one ends up on top. Ids that aren't the caller's are left out of the response. A bump changes only the sort time (`last_uploaded_at`), so images stay immutable for users.
 
 ### Search
 
@@ -153,6 +153,7 @@ images(
   mime_type text not null, size_bytes int not null,  -- the stored original's size, after stripping
   width int not null, height int not null,
   content_sha256 char(64) not null,          -- of the uploaded file, which the web client hashes too
+  stored_sha256 char(64),                    -- of the stored, stripped file; null until backfilled (#113)
   uploaded_at timestamptz not null default now(),
   last_uploaded_at timestamptz not null default now()  -- the sort key; a bump moves it to now
 )
