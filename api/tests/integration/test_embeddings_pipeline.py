@@ -285,6 +285,8 @@ async def test_the_service_completes_a_job_and_stores_its_embedding(
         _PngStore(),
         FakeAnalyzer(),
         SupabaseAnalysisCache(worker),
+        max_bytes=10 * 1024 * 1024,
+        max_pixels=40_000_000,
         embedder=_EMBEDDER,
     )
     # The job the upload queued, run as a claim would hand it out.

@@ -332,6 +332,8 @@ async def test_concurrent_claims_never_share_a_job(
         SupabaseObjectStore(secret_client, stack_settings.STORAGE_BUCKET),
         FakeAnalyzer(),
         SupabaseAnalysisCache(secret_client),
+        max_bytes=stack_settings.MAX_UPLOAD_MB * 1024 * 1024,
+        max_pixels=stack_settings.MAX_IMAGE_PIXELS,
     )
     await asyncio.gather(*(service.process(job) for job in claimed))
     for uploaded in uploads:
