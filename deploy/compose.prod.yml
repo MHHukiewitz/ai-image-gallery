@@ -113,9 +113,9 @@ services:
       <<: *backend-env
       # Only the worker holds the key that bypasses RLS.
       SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:?set SUPABASE_SECRET_KEY in the server .env}
-      # The setting's default is `fake`, so production states its own default here. Setting
-      # ANALYZER in .env switches provider without a code change.
-      ANALYZER: ${ANALYZER:-anthropic}
+      # The setting's default is `fake`, so production states its own default here: Claude
+      # through OpenRouter. Setting ANALYZER in .env switches provider without a code change.
+      ANALYZER: ${ANALYZER:-openai_compat}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-}
       AI_EFFORT: ${AI_EFFORT:-}

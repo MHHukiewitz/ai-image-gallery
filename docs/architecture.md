@@ -24,7 +24,7 @@ The grading weights are: core functionality 35%, code quality 25%, UI/UX 20%, AI
 | D4 | **Ingest is synchronous** in the API: validate, thumbnail, store, insert. **AI enrichment is asynchronous** in a worker. | The thumbnail appears instantly and the AI never blocks the upload. |
 | D5 | **The queue is `image_metadata.ai_processing_status`**, claimed through an RPC that uses `FOR UPDATE SKIP LOCKED`. | It's durable, needs no Redis, and gives one source of truth for status. |
 | D6 | **Dominant colors are computed locally** (Pillow quantize). AI is used only for tags and the sentence. | Local extraction is free and deterministic, and more accurate than hex codes guessed by an LLM. Colors still work when the AI fails. |
-| D7 | An **`ImageAnalyzer` port** with three adapters: a **native Anthropic adapter** (the production path), an **OpenAI-compatible adapter** (benchmark comparisons and fallback) and a **`FakeAnalyzer`**. An optional, best-effort **`TagVerifier`** stage (Jev, #50) can then filter and merge tags. A **`TextEmbedder` port** (#63) has a local **fastembed** adapter running `BAAI/bge-small-en-v1.5` and a fake. The worker embeds each analyzed image's description and tags and stores the vector with **pgvector in the same Postgres**, so there is no vector-DB service. | Claude runs on the Max plan's monthly API credits. The official SDK gives typed structured outputs, typed errors and refusal handling. The OpenAI-compatible adapter keeps the comparison honest and keeps another vendor one config change away. Tests and offline dev need no key. The embedding model is small (about 65 MB, ONNX on the CPU, no torch), so semantic matching needs no second API, no key and no extra service, and the API never loads it. |
+| D7 | An **`ImageAnalyzer` port** with three adapters: a **native Anthropic adapter**, an **OpenAI-compatible adapter** (production calls Claude through OpenRouter with it, and the benchmark compares models with it) and a **`FakeAnalyzer`**. An optional, best-effort **`TagVerifier`** stage (Jev, #50) can then filter and merge tags. A **`TextEmbedder` port** (#63) has a local **fastembed** adapter running `BAAI/bge-small-en-v1.5` and a fake. The worker embeds each analyzed image's description and tags and stores the vector with **pgvector in the same Postgres**, so there is no vector-DB service. | Production calls Claude through OpenRouter, because the Anthropic key arrives after the deadline. The native adapter's official SDK gives typed structured outputs, typed errors and refusal handling. The OpenAI-compatible adapter keeps the comparison honest and keeps another vendor one config change away. Tests and offline dev need no key. The embedding model is small (about 65 MB, ONNX on the CPU, no torch), so semantic matching needs no second API, no key and no extra service, and the API never loads it. |
 | D8 | **Search and similarity live in Postgres SQL functions** (`security invoker`). | They run under RLS (so search is automatically per-user), paginate in the DB and need no vector DB. |
 | D9 | An **AI result cache** keyed by `(content_sha256, analyzer_id)`. | Re-uploads and re-analysis with the same model cost nothing. Changing the prompt version invalidates the cache. |
 | D10 | **React + Vite + TypeScript + Tailwind + TanStack Query**, served as a static SPA by nginx. | This matches the challenge stack and is cheap to host. TanStack Query handles caching, pagination and polling. |
@@ -48,7 +48,7 @@ flowchart LR
     PG[(Postgres + RLS)]
     ST[(Storage · private bucket)]
   end
-  AIP[Claude API · Anthropic]
+  AIP[Claude Haiku 5.5 · OpenRouter]
 
   SPA -- "gallery.hukiewitz.com" --> WEB
   SPA -- "email / password" --> AUTH
@@ -234,7 +234,7 @@ The prompt is versioned (`PROMPT_VERSION`), and `analyzer_id = f"{provider}:{mod
 
 **Cost control.** The image is downscaled to a 1024 px long side as JPEG q85 before sending. This uses Everlast's `normalize_image` pattern. Colors never cost tokens.
 
-**Provider choice.** We use **Claude through the Anthropic API**. The full comparison and rationale are in the decision record, **[ai-service-choice.md](ai-service-choice.md)**. It's paid from the Max plan's monthly API credits, so this demo's volume costs nothing extra. **Mike picks the model** from #6's measured benchmark, which is the deliverable for the 15% research item.
+**Provider choice.** We use **Claude Haiku 5.5 through OpenRouter**. The full comparison and rationale are in the decision record, **[ai-service-choice.md](ai-service-choice.md)**. The native Anthropic adapter is built and one config change away, but its key arrives after the deadline. **Mike picks the model** from #6's measured benchmark, which is the deliverable for the 15% research item.
 
 The benchmark runs 20 fixture images through these candidates:
 - **Claude:** `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`, directly through the native adapter (#31);
@@ -401,7 +401,7 @@ That project's stack is Next.js + FastAPI + SQLAlchemy/pgvector + arq/Redis + it
 **Worth taking:**
 
 - `normalize_image`, `image_data_url` and `vision_messages` from `apps/api/app/services/ingest.py`, about 40 lines, which go into the OpenAI-compatible adapter.
-- The **existing OpenRouter key** for the benchmark's non-Claude reference model, so no new account is needed. Claude itself runs on the Max plan's API credits.
+- The **existing OpenRouter key** for the benchmark's non-Claude reference model, so no new account is needed. Production calls Claude through it too (§7).
 
 **Not reused:**
 
@@ -426,6 +426,6 @@ The ticket breakdown, dependencies, agent models and the critical-path diagram l
 | Supabase | Supabase Cloud, free tier, EU (Frankfurt). Local dev uses `supabase start`. |
 | Email confirmation | **Off**, so reviewers can sign up instantly. This is documented in the README. Resend SMTP can be added later. |
 | Repo | `MHHukiewitz/ai-image-gallery`, **public**. The local checkout is `~/Workspace/ai-image-gallery`. |
-| AI provider | Claude through the Anthropic API, paid from the Max plan's monthly API credits, with a dedicated key and a spend-limited workspace (#28). Mike picks the model from #6's benchmark of Haiku 5.5, Sonnet 5.5 and Opus 5.5. |
+| AI provider | Claude Haiku 5.5 through OpenRouter, at OpenRouter's default effort (Mike, 2026-10-20). The Anthropic key (#28) arrives after the deadline, so the native adapter stays unused. Mike picks the model from #6's benchmark of Haiku 5.5, Sonnet 5.5 and Opus 5.5. |
 | Observability | JSON logs and Sentry for errors, using Sentry's EU region (optional, with #30). No Dagster, MLOps platform, Langfuse or PostHog. |
 | Jev (TypeSafe) | Optional and off in production (`TAG_VERIFIER=none`). It's typed-answer only and its image input is experimental, so it's not the main model. It's a best-effort check on the main model's tags (#50), with the measurements in the decision record (§3). |

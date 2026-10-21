@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | **Accepted** for the service: Claude through the Anthropic API. **Accepted** for the model tier: Claude Haiku 5.5 at low effort, Mike's pick on 2026-10-20 from the benchmark in #6 (§8). Until the Anthropic key exists (#28), production runs the same model through OpenRouter (§3). |
+| **Status** | **Accepted** for the model: Claude Haiku 5.5, Mike's pick on 2026-10-20 from the benchmark in #6 (§8). **Amended** for the service, the same day: production calls Claude through **OpenRouter**, at OpenRouter's default effort, and doesn't move to the Anthropic API. The Anthropic key arrives a week after the project's deadline (§3). |
 | **Date** | 2026-10-20. All prices were checked against the vendors' official pages that day, and #6 re-checked every one of them the same day: none had changed. |
 | **Deciders** | Mike (owner), orchestrator (research) |
-| **Related** | [architecture.md](architecture.md) §2 (D6, D7) and §7 · #6 ([benchmark](../bench/results/2026-10-20/summary.md)) · #31 (Anthropic adapter) · #50 (Jev tag verifier) · #28 (API key) |
+| **Related** | [architecture.md](architecture.md) §2 (D6, D7) and §7 · #6 ([benchmark](../bench/results/2026-10-20/summary.md)) · #31 (Anthropic adapter) · #50 (Jev tag verifier) · #28 (Anthropic key, closed as not planned) |
 
 ## 1. What the challenge needs
 
@@ -41,22 +41,22 @@ Per image, in the background:
 
 ## 3. Decision
 
-**We use Claude through the Anthropic API, called by the worker through the official `anthropic` Python SDK (#31).** The output is structured, validated with a Pydantic schema, and returns 5–10 tags and one sentence in a single call. Colors are computed locally (§5).
+**We use Claude through OpenRouter, called by the worker with `OpenAICompatAnalyzer`.** The native adapter on the official `anthropic` Python SDK (#31) is built, tested and one config change away. The output is structured, validated with a Pydantic schema, and returns 5–10 tags and one sentence in a single call. Colors are computed locally (§5).
 
 **The model tier: Mike's pick is Claude Haiku 5.5, low effort (2026-10-20).** #6 benchmarked Haiku 5.5, Sonnet 5.5 and Opus 5.5, plus Gemini 2.5 Flash-Lite and GPT-6 Luna as non-Claude references, on 30 images (§8). The Anthropic key wasn't ready, so every model ran **through OpenRouter**. Mike picked from the measured quality, latency and cost. The `ImageAnalyzer` port keeps the choice a config change (`AI_MODEL`, `AI_EFFORT`), not a code change.
 
-**Interim setup.** There's no Anthropic API key yet (#28). Since 2026-10-20, production runs `anthropic/claude-haiku-5.5` through OpenRouter, with `OpenAICompatAnalyzer` at default effort. OpenRouter's default for this model is medium, and it measured $0.245 per 1k images. Production switches to the native adapter once the key exists: `ANALYZER=anthropic`, `AI_MODEL=claude-haiku-5-5` and `AI_EFFORT=low`. `.env.example` already carries `AI_MODEL` and `AI_EFFORT` for that setup.
+**Production setup (Mike, 2026-10-20).** Production runs `anthropic/claude-haiku-5.5` through OpenRouter with `OpenAICompatAnalyzer`, and stays there. The Anthropic key arrives a week after the project's deadline, so #28 is closed as not planned. The adapter sends no effort hint, so OpenRouter's default applies. For this model that's medium, which measured $0.245 per 1k images, against $0.19 at low effort. Both scored the same for tags. The native adapter stays one config change away: `ANALYZER=anthropic`, `ANTHROPIC_API_KEY`, `AI_MODEL=claude-haiku-5-5` and `AI_EFFORT=low`.
 
 Haiku 5.5 at low effort cost $0.19 per 1k images, answered in about 3 s (p50) and returned valid JSON on the first try for all 30 images. On the 10 images rated by eye, its tags scored as well as Sonnet's and Opus's. Why this pick, and what it gives up:
 - **Sonnet or Opus would buy no measurable quality here.** The three tiers sit within noise of each other at default effort: tags 4.7–4.8, descriptions 4.6–4.8. Sonnet costs about 16–20 times as much per image ($3.89 per 1k) and Opus about 38–48 times ($7.68–$9.32), with no faster reply. Both still fit in the $200 credit (Sonnet ≈ 51k images a month, Opus ≈ 21k–26k). Choose one only for headroom on harder photos than our set.
 - **Gemini 2.5 Flash-Lite is cheaper and faster, but weaker.** It costs 2.4 times less than Haiku and answers about 1.2 s sooner, but it scored 3.5 for tags and 3.4 for descriptions. Its tags are often generic single words, which make text search worse. The saving is $0.11 per 1k images.
 - **GPT-6 Luna costs the same as Haiku and scored lower.** It scored 4.4 / 4.4, answered about 1.5 s slower at p50 (it reasons by default), and would add a second account.
 - **Low effort is the right setting for Haiku.** Against the default (which OpenRouter reports as medium), it cut cost by 21% and output tokens by half, and the tag score didn't drop (4.7 to 4.8). Its descriptions run long (24 of 30 over the prompt's 25 words), which cost it points on a strict rating but doesn't hurt the product, because the pipeline only caps characters. Tightening the prompt is a better fix than raising the effort.
-- **Caveats.** The numbers come from OpenRouter, so latency includes an extra hop and "effort" is OpenRouter's `reasoning.effort` hint. The native run with `anthropic:claude-haiku-5-5` follows once the key exists (#28). The quality ratings are one rater's, on 10 images.
+- **Caveats.** The numbers come from OpenRouter, so latency includes an extra hop and "effort" is OpenRouter's `reasoning.effort` hint. No native run is planned, because production stays on OpenRouter. The quality ratings are one rater's, on 10 images.
 
 ### Why: cost
-- **Our marginal cost is $0.** Mike's Max plan includes **$200 a month of Claude API credits** in a linked Console org. Per §4, that covers tens of thousands of images a month even on Opus, and far more on Haiku.
-- **A spend-limited workspace contains mistakes.** The API key lives in its own workspace (#28), so a bug can't drain the credit.
+- **On the native adapter, our marginal cost would be $0.** Mike's Max plan includes **$200 a month of Claude API credits** in a linked Console org. Per §4, that covers tens of thousands of images a month even on Opus, and far more on Haiku.
+- **Production doesn't use the credit yet.** It runs through OpenRouter at list prices (§3), because the key arrives after the deadline. At $0.245 per 1k images, the demo's volume costs cents. A switch to the native adapter would move the spend onto the credit, with the key in its own spend-limited workspace.
 - **Without the credit, the price race is close.** Haiku 5.5, gpt-6-luna and Gemini 2.5 Flash-Lite all cost a few tenths of a dollar per 1k images, so cost alone wouldn't pick between them. The credit settles it.
 - **The label APIs cost more and do less.** Options D and E cost $1.75–3.00 per 1k images and still need an LLM for the sentence.
 
@@ -183,7 +183,7 @@ The worker extracts the top 3 colors with Pillow:
 
 **What was run.** `scripts/bench_analyzers.py` sent 30 images through each model, one call at a time, with the worker's own prompt and schema (`PROMPT_VERSION` v1). The images are all 11 religious-art images and 19 of Mike's phone photos, spread evenly over the name-sorted list. `bench/results/2026-10-20/subset.txt` lists the images by file name for the art and as `photo-<hash>` (the start of the content's sha256) for the phone photos, and the images themselves aren't committed. The full tables, the quality rubric and every rating are in **[`bench/results/2026-10-20/summary.md`](../bench/results/2026-10-20/summary.md)**, next to one JSON file per run.
 
-> **Through OpenRouter, for now.** The Anthropic API key wasn't available, so every model, Claude included, was called through OpenRouter's OpenAI-compatible endpoint with `OpenAICompatAnalyzer`. The Claude rows are labeled "via OpenRouter" and are **not yet a check of the native adapter** (#31). OpenRouter bills at the vendors' list prices, so costs carry over. Latency includes OpenRouter's extra hop, and "effort" here is OpenRouter's `reasoning.effort` hint, not Anthropic's own setting. Re-run with `--models anthropic:claude-haiku-5-5 anthropic:claude-sonnet-5-5 anthropic:claude-opus-5-5 --effort low` once the key exists.
+> **Through OpenRouter.** The Anthropic API key wasn't available, so every model, Claude included, was called through OpenRouter's OpenAI-compatible endpoint with `OpenAICompatAnalyzer`. The Claude rows are labeled "via OpenRouter" and are **not yet a check of the native adapter** (#31). OpenRouter bills at the vendors' list prices, so costs carry over. Latency includes OpenRouter's extra hop, and "effort" here is OpenRouter's `reasoning.effort` hint, not Anthropic's own setting. With an Anthropic key, `--models anthropic:claude-haiku-5-5 anthropic:claude-sonnet-5-5 anthropic:claude-opus-5-5 --effort low` would check the native adapter.
 
 | Model | Effort | $ per 1k images | p50 / p95 latency | Valid JSON, first try | Mean tags | Quality: tags / description (1–5) |
 |---|---|---|---|---|---|---|
@@ -212,7 +212,7 @@ All 240 calls succeeded: 8 runs × 30 images, with no refusals, retries or corre
 
 **Spend:** $0.656 of a $0.75 cap on the OpenRouter key, and $0.009 for the Jev runs, which TypeSafe bills. The Jev measurements are in §3.
 
-**Mike's pick: Claude Haiku 5.5, low effort (2026-10-20).** The reasons and trade-offs are in §3. Until the Anthropic key exists (#28), production runs `anthropic/claude-haiku-5.5` through OpenRouter at default effort, which measured $0.245 per 1k images. The native run (`--models anthropic:claude-haiku-5-5 --effort low`) follows with the key.
+**Mike's pick: Claude Haiku 5.5, low effort (2026-10-20).** The reasons and trade-offs are in §3. Production runs `anthropic/claude-haiku-5.5` through OpenRouter at default effort, which measured $0.245 per 1k images, and stays there (§3).
 
 **Privacy.** The repository is public, so the phone photos appear only as `photo-<hash>`, and the tags and descriptions the models wrote for them are withheld from the results files and from this document. Their latency, tokens, cost, counts and quality scores are kept. `bench_analyzers.py --redact` does this. The art outputs are kept as they are.
 

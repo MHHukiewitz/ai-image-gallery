@@ -61,9 +61,9 @@ The decisions, the data model, the API contract and the search formulas are in [
 
 ## AI service choice
 
-**The pick:** Claude Haiku 5.5 at low effort (`AI_MODEL=claude-haiku-5-5`, `AI_EFFORT=low`), called through the official `anthropic` SDK. One call returns the tags and the sentence as validated JSON. The colors are computed locally, so the model never has to guess hex codes.
+**The pick:** Claude Haiku 5.5, called through OpenRouter (`ANALYZER=openai_compat`, `AI_MODEL=anthropic/claude-haiku-5.5`). One call returns the tags and the sentence as validated JSON. The colors are computed locally, so the model never has to guess hex codes.
 
-**The cost:** about **$0.19 per 1,000 images** at low effort, measured on 30 benchmark images. The same model at OpenRouter's default effort measured $0.245 per 1,000, and that is what the live site pays until the Anthropic key arrives ([#28](https://github.com/MHHukiewitz/ai-image-gallery/issues/28)).
+**The cost:** about **$0.245 per 1,000 images** at OpenRouter's default effort, measured on 30 benchmark images. That's what the live site pays. Low effort measured $0.19 with the same tag quality, but only the native Anthropic adapter sends an effort setting. It's built and one config change away. The key for it arrives after the deadline, so production stays on OpenRouter ([#28](https://github.com/MHHukiewitz/ai-image-gallery/issues/28)).
 
 Sonnet 5.5 and Opus 5.5 scored the same on our 10-image rating, at 16 to 48 times the cost. Gemini 2.5 Flash-Lite was cheaper but gave generic tags. GPT-6 Luna cost the same and scored lower. The full comparison, including the label APIs and self-hosting, the benchmark method and the risks, is in the decision record, [docs/ai-service-choice.md](docs/ai-service-choice.md).
 
@@ -134,7 +134,7 @@ Migrations ship with the code. Supabase's GitHub integration applies each new fi
 |---|---|---|
 | Supabase URL and publishable key | The browser bundle (`VITE_*`), the API and the worker | Public by design. Anonymous requests can't read any data, because every table's policies apply only to `authenticated`. |
 | Supabase secret key | The worker only, in production | It bypasses RLS, so only the one process that needs it has it. The worker has no public ingress. The API never imports it. |
-| Anthropic key (or OpenRouter key) | The worker only | It never reaches the browser or the API. Use a spend-limited key. |
+| OpenRouter key (or Anthropic key) | The worker only | It never reaches the browser or the API. Use a spend-limited key. |
 | Server `.env` | `/opt/ai-gallery/.env` on the server, mode 600 | Gitignored. The deploy script never copies it. It refuses to deploy while a `CHANGE_ME` placeholder remains. |
 
 Production passes each container only the variables it needs. The local `docker-compose.yml` is looser: its `env_file: .env` gives the local API container the whole file, secret key included. The API doesn't read the key, but it's visible in that container's environment. This is a known gap, listed in the next steps.
@@ -170,7 +170,6 @@ On 2026-10-20, production showed four problems. Each has a fix and a test.
 
 **Next steps**
 
-- Switch production from OpenRouter to the native Anthropic adapter once the key exists ([#28](https://github.com/MHHukiewitz/ai-image-gallery/issues/28)). The native benchmark run follows.
 - Turn email confirmation back on, with SMTP through Resend.
 - Strip EXIF metadata, or at least GPS tags, from originals.
 - Stop passing the whole `.env` to the local API container, and list its variables as production does.

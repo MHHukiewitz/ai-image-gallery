@@ -41,10 +41,11 @@ ssh ops@5.75.189.90 'docker network ls --filter name=^sites$ --format "{{.Name}}
 | `SUPABASE_SECRET_KEY` | yes | the project's secret key. Only the worker receives it. |
 | `VITE_SUPABASE_URL` | yes | the same value as `SUPABASE_URL`. The browser bundle bakes it in at build time. |
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | yes | the same value as `SUPABASE_PUBLISHABLE_KEY` |
-| `ANALYZER` | no | `anthropic` (the default). See "Until the AI key exists" below. |
-| `ANTHROPIC_API_KEY` | with `anthropic` | the key from the spend-limited workspace (#28) |
-| `AI_MODEL` | with `anthropic` | the model id picked by the benchmark in #6, for example `claude-haiku-5-5` |
-| `AI_EFFORT` | no | `low` (the default), `medium` or `high` |
+| `ANALYZER` | yes | `openai_compat`, Claude through OpenRouter. See "Choosing the AI provider" below. |
+| `AI_API_KEY` | with `openai_compat` | the OpenRouter key. Give it a credit limit, so a bug can't drain the account. |
+| `ANTHROPIC_API_KEY` | with `anthropic` | an Anthropic API key, only for the native adapter |
+| `AI_MODEL` | yes | the model picked by the benchmark in #6: `anthropic/claude-haiku-5.5` on OpenRouter, `claude-haiku-5-5` with `anthropic` |
+| `AI_EFFORT` | no | `low` (the default), `medium` or `high`. Only the `anthropic` adapter sends it. |
 | `SENTRY_DSN` | no | the API and worker DSN from #30. Empty keeps Sentry off. |
 | `VITE_SENTRY_DSN` | no | the browser DSN from #30. Empty keeps Sentry off. |
 
@@ -55,14 +56,14 @@ Rules that follow from the design:
 - **Anything in `.env.example` that isn't listed above is optional tuning**, such as `LOG_LEVEL`, `WORKER_CONCURRENCY`, `MAX_UPLOAD_MB` and `AI_TIMEOUT_SECONDS`. When a line is absent or empty, the default in `api/src/gallery/config.py` applies. If you raise `MAX_UPLOAD_MB`, raise `VITE_MAX_UPLOAD_MB` to match.
 - **`VITE_*` values are compiled into the bundle.** Changing one means a redeploy. It rebuilds the web image.
 
-### Until the AI key exists
+### Choosing the AI provider
 
-The worker reads `ANALYZER` from `.env`, so an interim provider needs no code change:
+The worker reads `ANALYZER` from `.env`, so switching providers needs no code change. Production uses the first:
 
 - `ANALYZER=openai_compat` with `AI_API_KEY`, `AI_MODEL` and optionally `AI_BASE_URL` (the default is OpenRouter). Empty `ANTHROPIC_API_KEY=`.
 - `ANALYZER=fake` returns deterministic placeholder analyses. Use it for a smoke test only, never for the review.
 
-When the Anthropic key arrives, set `ANALYZER=anthropic`, `ANTHROPIC_API_KEY` and `AI_MODEL`, then run `scripts/deploy.sh` again. If the worker's settings are wrong, it stops at startup with a clear message (`ANALYZER=anthropic needs ANTHROPIC_API_KEY`) and Docker keeps restarting it. Watch `docker compose -p ai-gallery logs worker`.
+For the native adapter instead, set `ANALYZER=anthropic`, `ANTHROPIC_API_KEY` and `AI_MODEL`, then run `scripts/deploy.sh` again. If the worker's settings are wrong, it stops at startup with a clear message (`ANALYZER=anthropic needs ANTHROPIC_API_KEY`) and Docker keeps restarting it. Watch `docker compose -p ai-gallery logs worker`.
 
 ## 2. Supabase production setup
 
