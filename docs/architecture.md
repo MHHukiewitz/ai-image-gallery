@@ -79,12 +79,12 @@ sequenceDiagram
   participant S as Supabase (PG + Storage)
   participant W as Worker
   participant L as Claude API
-  B->>A: POST /api/v1/images (1 file/request, XHR progress, 3 concurrent)
+  B->>A: POST /api/v1/images (1 file/request, XHR progress, 2 concurrent, 1 on touch devices)
   A->>A: verify JWT · sniff JPEG/PNG · ≤10 MB · ≤40 MP · EXIF-orient · 300×300 WebP · sha256
   A->>S: upload {uid}/{uuid}/original.ext + thumb.webp (as user)
   A->>S: insert images + image_metadata(status=pending) (as user)
   A-->>B: 201 ImageOut (thumbnail_url, status=pending)
-  loop adaptive poll 1s → 10s when idle
+  loop adaptive poll 1s → 3s when idle
     W->>S: rpc claim_analysis_jobs(n)
   end
   W->>S: download original
@@ -100,9 +100,16 @@ sequenceDiagram
 
 - If the DB insert fails after the objects were uploaded, the API deletes the objects.
 - The adapter retries transient errors itself (429, 5xx, timeouts): 2 retries with exponential backoff. Invalid JSON gets one repair attempt.
+- Every Supabase database request has an 8-second limit (`SUPABASE_HTTP_TIMEOUT_SECONDS`). Idempotent calls (reads, lookups, the bump and reanalyze RPCs) retry up to 3 times with full-jitter backoff on timeouts, connection errors, 429 and 5xx. Inserts are never retried. Storage calls retry up to 4 times on 429, 5xx and network errors, so an upload burst doesn't turn into false failures.
 - At the job level, `attempts < 3` sends the job back to `pending` with `next_attempt_at`. After that it becomes `failed`, with `last_error` set and the colors kept.
 - A crashed worker leaves jobs in `processing`. After 5 minutes, `claim_analysis_jobs` reclaims them.
 - The UI shows "Analysis failed · Retry". Retry calls `POST /images/{id}/reanalyze`, which calls the `request_reanalysis` RPC.
+
+### Duplicates and bumps
+
+A file the user already has is never stored twice. The API hashes the upload (`content_sha256`) and looks the hash up among the caller's own images **before** any Storage write. On a match, `bump_image` moves that image to the top of the gallery and the API answers `200` with the existing image. Otherwise it stores the file as usual and answers `201`. Two identical uploads that race can both get through, and the web client's batching covers the usual case.
+
+For a whole drop, the web client hashes the files, asks for the matches with `POST /api/v1/images/lookup` in batches of 50, and bumps the duplicates with `POST /api/v1/images/bump`, also in batches of 50. A batch bump is one RPC and one signed-URL call. The ids are stamped in array order, so the last one ends up on top. Ids that aren't the caller's are left out of the response. A bump changes only the sort time (`last_uploaded_at`), so images stay immutable for users.
 
 ### Search
 
@@ -130,7 +137,8 @@ images(
   mime_type text not null, size_bytes int not null,
   width int not null, height int not null,
   content_sha256 char(64) not null,
-  uploaded_at timestamptz not null default now()
+  uploaded_at timestamptz not null default now(),
+  last_uploaded_at timestamptz not null default now()  -- the sort key; a bump moves it to now
 )
 image_metadata(
   id bigint generated always as identity primary key,
@@ -186,11 +194,14 @@ All endpoints except health require `Authorization: Bearer <supabase access toke
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/health` | Liveness check. With `?deep=1` it also checks the DB. Used by Uptime Kuma. |
-| POST | `/api/v1/images` | Multipart `file`. Returns 201 `ImageOut`, 413 if too large, 415 if not JPEG/PNG. |
+| POST | `/api/v1/images` | Multipart `file`. Returns 201 `ImageOut`. Returns 200 with the existing image when the caller already has the same bytes, which are bumped to the top. 413 if too large, 415 if not JPEG/PNG. |
 | GET | `/api/v1/images` | `offset` (default 0) and `limit` (20, max 50). **At most one** of `q`, `similar_to` or `color` (`#rrggbb`); otherwise 422. Returns `Page[ImageOut]`. |
 | GET | `/api/v1/images/{id}` | Returns `ImageOut` plus `original_url` |
 | DELETE | `/api/v1/images/{id}` | Returns 204. Removes the objects and the rows. |
 | POST | `/api/v1/images/{id}/reanalyze` | Returns 202. Resets the status to `pending`. |
+| POST | `/api/v1/images/{id}/bump` | Moves one of the caller's images to the top. Returns 200 `ImageOut`, or 404. |
+| POST | `/api/v1/images/bump` | Body `{"image_ids": [...]}`, 1 to 50 ids. Returns `{"items": [ImageOut]}`, with one signed-URL call. Ids that aren't the caller's are left out. |
+| POST | `/api/v1/images/lookup` | Body `{"content_sha256": [...]}`, 1 to 50 hashes. Returns the caller's matches as `{"matches": {sha: id}}`. |
 
 ```ts
 type AnalysisStatus = "pending" | "processing" | "done" | "failed";
@@ -318,6 +329,7 @@ ai-image-gallery/
 │     ├─ ports.py               Protocols: ImageRepo, ObjectStore, ImageAnalyzer, JobQueue
 │     └─ adapters/              supabase_client.py, supabase_images.py, supabase_storage.py,
 │                                supabase_jobs.py, supabase_cache.py, analyzers/{anthropic,openai_compat,fake}.py
+│                                embeddings/fastembed.py, verifiers/jev.py, retry.py
 ├─ web/                         React · Vite · TS · Tailwind · TanStack Query
 │  └─ src/
 │     ├─ app/                   router, providers, layout
@@ -329,7 +341,7 @@ ai-image-gallery/
 ├─ supabase/                    config.toml · migrations/ · seed.sql · tests/ (pgTAP)
 ├─ deploy/                      compose.prod.yml (Traefik labels)
 ├─ scripts/                     deploy.sh · bench_analyzers.py · gen-api-types.sh
-├─ docs/                        architecture.md · ai-service-choice.md · critical-path.md · adr/
+├─ docs/                        architecture.md · ai-service-choice.md · critical-path.md
 ├─ docker-compose.yml           local api + worker + web (Supabase via `supabase start`)
 ├─ AGENTS.md                    conventions every swarm agent must follow
 └─ .github/workflows/ci.yml
@@ -351,7 +363,7 @@ ai-image-gallery/
 - **Deploy:** `scripts/deploy.sh` rsyncs the repo to `/opt/ai-gallery` (skipping `.env`, `node_modules` and `.venv`), then runs `ssh … docker compose -f deploy/compose.prod.yml up -d --build`. Building on the box avoids cross-compiling from arm64 to amd64. `.env` exists only on the server.
 - **Migrations:** Supabase's GitHub integration deploys every new migration in `supabase/migrations/` to production when it merges to `main` (working directory `.`). CI's `db` job proves a clean apply first. Auth settings are set once in the dashboard, because `config.toml`'s `[auth]` section stays local. Migrations never run from containers.
 - **Keeping Supabase awake:** free-tier Supabase pauses after a week of inactivity. The worker's polling plus an Uptime Kuma check on `/api/health?deep=1` should keep it awake. Otherwise, use Pro for the review window.
-- **Footprint:** about 300 MB of RAM in total.
+- **Memory limits:** API 768 MB, worker 1 GB and web 64 MB, in `deploy/compose.prod.yml`. The API's limit covers the embedding model (about 165 MiB once loaded) and decoding phone photos.
 
 ## 11. Testing and CI
 
@@ -361,7 +373,7 @@ ai-image-gallery/
 | Services | uploads and analysis against fake ports (including AI failure and cache hit) | pytest |
 | DB | **RLS isolation**: user B can't read, search, find similar to, or delete A's images. The search RPCs return the expected ordering. | pgTAP or pytest against `supabase start` |
 | Web | the query-state ↔ URL mapping and the upload queue reducer | Vitest + Testing Library |
-| End to end | sign up → upload 2 → analyzed → text, similar and color search → logout | Playwright against the local stack with `FakeAnalyzer` |
+| End to end | sign up → upload 3 → analyzed → text, similar and color search → sign out → a second user sees none of it | Playwright against the local stack with `FakeAnalyzer` (`e2e/`) |
 | CI | ruff, pytest, tsc, eslint, vitest, docker build, gitleaks. A Supabase integration job runs via `supabase/setup-cli`. | GitHub Actions |
 
 ### Observability
@@ -416,4 +428,4 @@ The ticket breakdown, dependencies, agent models and the critical-path diagram l
 | Repo | `MHHukiewitz/ai-image-gallery`, **public**. The local checkout is `~/Workspace/ai-image-gallery`. |
 | AI provider | Claude through the Anthropic API, paid from the Max plan's monthly API credits, with a dedicated key and a spend-limited workspace (#28). Mike picks the model from #6's benchmark of Haiku 5.5, Sonnet 5.5 and Opus 5.5. |
 | Observability | JSON logs and Sentry for errors, using Sentry's EU region (optional, with #30). No Dagster, MLOps platform, Langfuse or PostHog. |
-| Jev (TypeSafe) | Not in the pipeline. It's typed-answer only and image input is experimental. It's listed as a rejected option in the research doc. |
+| Jev (TypeSafe) | Optional and off in production (`TAG_VERIFIER=none`). It's typed-answer only and its image input is experimental, so it's not the main model. It's a best-effort check on the main model's tags (#50), with the measurements in the decision record (§3). |
