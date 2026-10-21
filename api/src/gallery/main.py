@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from PIL import Image
 
+from gallery.api.body_limit import BodyLimitMiddleware
 from gallery.api.errors import register_error_handlers
 from gallery.api.routes import health, images, uploads
 from gallery.api.schemas import ErrorResponse
@@ -36,6 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(uploads.router)
     app.include_router(images.router)
     register_error_handlers(app)
+    app.add_middleware(BodyLimitMiddleware)
     return app
 
 
