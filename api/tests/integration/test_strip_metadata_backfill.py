@@ -146,6 +146,7 @@ async def store_as_before(tenant: Tenant, data: bytes) -> int:
             width=48,
             height=64,
             content_sha256=hashlib.sha256(data).hexdigest(),
+            stored_sha256=hashlib.sha256(data).hexdigest(),
         )
     )
     return record.id

@@ -137,6 +137,7 @@ def new_image() -> NewImage:
         width=640,
         height=480,
         content_sha256="a" * 64,
+        stored_sha256="a" * 64,
     )
 
 

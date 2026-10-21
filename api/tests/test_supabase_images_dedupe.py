@@ -16,8 +16,11 @@ from gallery.domain.models import AllImages
 OWNER_ID = "7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c"
 
 
-def detail_row(image_id: int, sha256: str) -> dict[str, Any]:
-    """One `image_details` row, including the sort column the view now carries."""
+def detail_row(image_id: int, sha256: str, stored_sha256: str | None = None) -> dict[str, Any]:
+    """One `image_details` row, including the sort column and the stored hash the view carries.
+
+    The stored hash defaults to the content hash: a file without metadata strips to itself.
+    """
     folder = f"{OWNER_ID}/{image_id}"
     return {
         "id": image_id,
@@ -37,6 +40,7 @@ def detail_row(image_id: int, sha256: str) -> dict[str, Any]:
         "ai_processing_status": "pending",
         "last_error": None,
         "last_uploaded_at": "2026-10-21T08:00:00+00:00",
+        "stored_sha256": sha256 if stored_sha256 is None else stored_sha256,
     }
 
 
@@ -94,7 +98,7 @@ def repo_over(client: FakePostgrest) -> SupabaseImageRepo:
 # --- find_by_sha256 ------------------------------------------------------------------------
 
 
-async def test_find_by_sha256_asks_image_details_once_with_an_in_filter_newest_first() -> None:
+async def test_find_by_sha256_asks_image_details_once_for_both_hashes_newest_first() -> None:
     client = FakePostgrest([detail_row(2, "b" * 64)])
 
     await repo_over(client).find_by_sha256(["a" * 64, "b" * 64])
@@ -104,7 +108,14 @@ async def test_find_by_sha256_asks_image_details_once_with_an_in_filter_newest_f
             "image_details",
             [
                 ("select", ("*",), {}),
-                ("in_", ("content_sha256", ["a" * 64, "b" * 64]), {}),
+                (
+                    "or_",
+                    (
+                        f"content_sha256.in.({'a' * 64},{'b' * 64}),"
+                        f"stored_sha256.in.({'a' * 64},{'b' * 64})",
+                    ),
+                    {},
+                ),
                 ("order", ("last_uploaded_at",), {"desc": True}),
                 ("order", ("id",), {"desc": True}),
                 # The SDK's own retry of a 503 is off: the repo's retry is the only one.
@@ -130,6 +141,47 @@ async def test_find_by_sha256_keeps_the_newest_of_several_images_with_one_hash()
     matches = await repo_over(client).find_by_sha256(["a" * 64])
 
     assert [record.id for record in matches.values()] == [9]
+
+
+async def test_find_by_sha256_matches_the_stored_hash_of_a_file_whose_metadata_was_stripped() -> (
+    None
+):
+    # The upload's own hash is "a", the stored file's is "d": a second upload of the same picture
+    # with other metadata strips to "d" too.
+    client = FakePostgrest([detail_row(4, "a" * 64, stored_sha256="d" * 64)])
+
+    matches = await repo_over(client).find_by_sha256(["d" * 64])
+
+    assert {sha: record.id for sha, record in matches.items()} == {"d" * 64: 4}
+
+
+async def test_find_by_sha256_answers_both_hashes_that_one_image_matches() -> None:
+    client = FakePostgrest([detail_row(4, "a" * 64, stored_sha256="d" * 64)])
+
+    matches = await repo_over(client).find_by_sha256(["a" * 64, "d" * 64])
+
+    assert {sha: record.id for sha, record in matches.items()} == {"a" * 64: 4, "d" * 64: 4}
+
+
+async def test_find_by_sha256_still_matches_a_row_without_a_stored_hash_by_content() -> None:
+    # Rows from before the stored hash existed have none until the backfill fills it in.
+    row = detail_row(6, "a" * 64)
+    row["stored_sha256"] = None
+    client = FakePostgrest([row])
+
+    matches = await repo_over(client).find_by_sha256(["a" * 64])
+
+    assert {sha: record.id for sha, record in matches.items()} == {"a" * 64: 6}
+
+
+@pytest.mark.parametrize("bad", ["A" * 64, "a" * 63, "a" * 63 + ")", "x" * 64], ids=repr)
+async def test_find_by_sha256_refuses_anything_but_a_hex_digest_before_asking(bad: str) -> None:
+    # The hashes are written into PostgREST's filter syntax, so nothing else may reach it.
+    client = FakePostgrest([detail_row(1, "a" * 64)])
+
+    with pytest.raises(ValueError):
+        await repo_over(client).find_by_sha256([bad])
+    assert client.queries == []
 
 
 async def test_find_by_sha256_without_hashes_asks_nothing() -> None:

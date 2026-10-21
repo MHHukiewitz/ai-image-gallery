@@ -164,6 +164,8 @@ async def _upload(
             width=48,
             height=32,
             content_sha256=content_sha256 or hashlib.sha256(data).hexdigest(),
+            # What is stored is `data`, whatever the row claims about the upload.
+            stored_sha256=hashlib.sha256(data).hexdigest(),
         )
     )
 

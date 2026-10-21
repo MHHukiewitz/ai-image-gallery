@@ -22,8 +22,9 @@ class ImageRepo(Protocol):
 
     async def get(self, image_id: int) -> ImageRecord | None: ...
 
-    # Maps each of the caller's content hashes that has a match to that image. If several images
-    # share a hash (older uploads can), the most recently uploaded one is returned.
+    # Maps each given hash to the caller's image whose content_sha256 (the uploaded file) or
+    # stored_sha256 (the stored file, without metadata) equals it. If several images match (older
+    # uploads can), the most recently uploaded one is returned.
     async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]: ...
 
     # Moves the image to the top of the caller's gallery. None when it is missing or not theirs.

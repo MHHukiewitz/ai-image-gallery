@@ -151,6 +151,8 @@ def _new_image(owner: Tenant, **overrides: Any) -> NewImage:
         "width": 640,
         "height": 480,
         "content_sha256": "ab" * 32,
+        # A PNG without metadata is stored as it came, so both hashes are the same.
+        "stored_sha256": "ab" * 32,
     }
     return NewImage(**(fields | overrides))
 

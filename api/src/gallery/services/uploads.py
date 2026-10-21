@@ -37,6 +37,20 @@ _QUOTA_WINDOW = timedelta(seconds=_QUOTA_WINDOW_SECONDS)
 
 
 @dataclass(frozen=True, slots=True)
+class _Processed:
+    """What the CPU-bound step makes of an upload: everything the rest of `upload` needs."""
+
+    info: ImageInfo
+    thumbnail: bytes
+    # The file to store: the upload without its metadata, pixels untouched.
+    original: bytes
+    # The hash of the uploaded file, which the web client also computes.
+    content_sha256: str
+    # The hash of `original`. It matches another upload of the same picture with other metadata.
+    stored_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class UploadResult:
     """What an upload produced: the image, its signed thumbnail URL, and whether it is new.
 
@@ -111,10 +125,12 @@ class UploadService:
         the same limit when it inserts the row, so the second is refused there: its objects are
         removed and the same QuotaExceededError is raised (see the repo's `insert`).
 
-        A file whose hash matches one of the user's images writes nothing to Storage: that image
-        is moved to the top of the gallery and returned with `created=False`. The hash is computed
-        from the bytes here, never taken from the client, and RLS keeps the lookup inside the
-        caller's images.
+        A file that matches one of the user's images writes nothing to Storage: that image is
+        moved to the top of the gallery and returned with `created=False`. It matches when its own
+        hash equals the image's `content_sha256`, or when its hash without metadata equals the
+        image's `stored_sha256`, so the same picture with other metadata, or a downloaded original
+        uploaded again, is a duplicate too. The hashes are computed from the bytes here, never
+        taken from the client, and RLS keeps the lookup inside the caller's images.
 
         Two identical uploads in flight at the same moment can both pass the lookup and both be
         stored. That is accepted: the web client collapses identical files within a drop, which
@@ -124,7 +140,7 @@ class UploadService:
         The stored original has its metadata stripped, and `size_bytes` is its stored size. A file
         the stripper can't parse is refused with InvalidImageError, never stored as it came.
         `content_sha256` stays the hash of the uploaded bytes, because the web client hashes the
-        file it drops to find duplicates.
+        file it drops to find duplicates, and `stored_sha256` is the hash of the stored bytes.
 
         Once the row is inserted the upload has succeeded. If the thumbnail then can't be
         signed, the URL is an empty string: failing the request would report an error for an
@@ -133,9 +149,13 @@ class UploadService:
         # Decoding is CPU-bound, so it runs in a thread to keep other requests moving. A burst of
         # photos would otherwise decode side by side and exhaust the container's memory.
         async with self._processing_slots:
-            info, thumbnail, original, content_sha256 = await asyncio.to_thread(self._process, data)
+            processed = await asyncio.to_thread(self._process, data)
+        info, original = processed.info, processed.original
 
-        existing = (await self._repo.find_by_sha256([content_sha256])).get(content_sha256)
+        # One lookup for both hashes. A file without metadata strips to itself, so it asks once.
+        hashes = list(dict.fromkeys([processed.content_sha256, processed.stored_sha256]))
+        matches = await self._repo.find_by_sha256(hashes)
+        existing = matches.get(processed.content_sha256) or matches.get(processed.stored_sha256)
         if existing is not None:
             bumped = await self._repo.bump(existing.id)
             if bumped is not None:
@@ -151,7 +171,7 @@ class UploadService:
         thumbnail_path = f"{folder}/{_THUMBNAIL_FILENAME}"
         try:
             await self._store.put(original_path, original, info.mime_type)
-            await self._store.put(thumbnail_path, thumbnail, _THUMBNAIL_MIME_TYPE)
+            await self._store.put(thumbnail_path, processed.thumbnail, _THUMBNAIL_MIME_TYPE)
             record = await self._repo.insert(
                 NewImage(
                     user_id=user_id,
@@ -162,7 +182,8 @@ class UploadService:
                     size_bytes=len(original),
                     width=info.width,
                     height=info.height,
-                    content_sha256=content_sha256,
+                    content_sha256=processed.content_sha256,
+                    stored_sha256=processed.stored_sha256,
                 )
             )
         except Exception:
@@ -228,11 +249,17 @@ class UploadService:
     async def _result(self, record: ImageRecord, *, created: bool) -> UploadResult:
         return UploadResult(record, await self._sign_thumbnail(record.thumbnail_path), created)
 
-    def _process(self, data: bytes) -> tuple[ImageInfo, bytes, bytes, str]:
-        """Return the image's description, its thumbnail, the original to store, and its hash."""
+    def _process(self, data: bytes) -> _Processed:
+        """Inspect the upload, make its thumbnail, strip it and hash it before and after."""
         info = inspect_image(data, max_bytes=self.max_bytes, max_pixels=self._max_pixels)
         original = strip_metadata(data, info.mime_type)
-        return info, make_thumbnail(data), original, hashlib.sha256(data).hexdigest()
+        return _Processed(
+            info=info,
+            thumbnail=make_thumbnail(data),
+            original=original,
+            content_sha256=hashlib.sha256(data).hexdigest(),
+            stored_sha256=hashlib.sha256(original).hexdigest(),
+        )
 
     async def _sign_thumbnail(self, thumbnail_path: str) -> str:
         """Return the signed thumbnail URL, or "" when it can't be signed.

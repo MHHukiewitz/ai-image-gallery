@@ -182,6 +182,7 @@ async def test_the_repo_turns_the_refusal_into_quota_exceeded(
                 width=640,
                 height=480,
                 content_sha256="b" * 64,
+                stored_sha256="b" * 64,
             )
         )
 

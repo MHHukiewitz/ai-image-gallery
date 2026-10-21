@@ -13,6 +13,7 @@ import asyncio
 import functools
 import logging
 import random
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from typing import Any, Concatenate
@@ -40,6 +41,8 @@ _IMAGES = "images"
 _METADATA = "image_metadata"
 _DETAILS = "image_details"
 _UPLOAD_LOG = "upload_log"
+# A SHA-256 hex digest as the API stores it: 64 lowercase hex characters.
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 # The SQLSTATE enforce_upload_quota raises when an insert would pass the daily limit. PostgREST
 # answers a PT<status> state with that HTTP status and keeps the code in the error body. Matching
@@ -143,6 +146,7 @@ class SupabaseImageRepo:
                         "width": image.width,
                         "height": image.height,
                         "content_sha256": image.content_sha256,
+                        "stored_sha256": image.stored_sha256,
                     }
                 )
                 .execute()
@@ -202,25 +206,37 @@ class SupabaseImageRepo:
 
     @_retry_idempotent("find_by_sha256")
     async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
-        """Find the caller's images by content hash, in one query.
+        """Find the caller's images by either hash, in one query.
 
-        RLS limits the view to the caller's rows, so another user's copy of the same file is not
-        a match. Rows come back newest upload first, and the first row per hash is kept.
+        A hash matches an image whose `content_sha256` (the file as uploaded) or `stored_sha256`
+        (the file as stored, without metadata) equals it. RLS limits the view to the caller's
+        rows, so another user's copy of the same file is not a match. Rows come back newest upload
+        first, and the first row per hash is kept.
         """
         if not sha256s:
             return {}
+        # The hashes go into PostgREST's filter syntax, so only plain hex may get there. The API
+        # schema already enforces this; a bad value here would be a bug, not user input.
+        for sha256 in sha256s:
+            if not _SHA256_PATTERN.fullmatch(sha256):
+                raise ValueError(f"not a SHA-256 hex digest: {sha256!r}")
+        listed = ",".join(sha256s)
         response = (
             await self._client.table(_DETAILS)
             .select("*")
-            .in_("content_sha256", list(sha256s))
+            .or_(f"content_sha256.in.({listed}),stored_sha256.in.({listed})")
             .order("last_uploaded_at", desc=True)
             .order("id", desc=True)
             .retry(False)
             .execute()
         )
+        wanted = set(sha256s)
         matches: dict[str, ImageRecord] = {}
         for row in response.data:
-            matches.setdefault(row["content_sha256"], _row_to_record(row))
+            record = _row_to_record(row)
+            # One image can answer two of the given hashes, one through each column.
+            for sha256 in {row["content_sha256"], row.get("stored_sha256")} & wanted:
+                matches.setdefault(sha256, record)
         return matches
 
     async def bump(self, image_id: int) -> ImageRecord | None:

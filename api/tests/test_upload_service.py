@@ -16,6 +16,7 @@ from PIL import Image
 from PIL.ExifTags import GPS, IFD, Base
 
 from gallery.domain.errors import InvalidImageError, NotFoundError, QuotaExceededError
+from gallery.domain.metadata import strip_metadata
 from gallery.domain.models import AnalysisStatus, ImageRecord, NewImage
 from gallery.domain.thumbnails import make_thumbnail
 from gallery.services.uploads import UploadResult, UploadService, _shared_processing_slots
@@ -333,6 +334,7 @@ async def test_a_signing_failure_after_the_insert_still_returns_the_saved_image(
             width=640,
             height=480,
             content_sha256=record.content_sha256,
+            stored_sha256=record.content_sha256,
         )
     ]
     # The image is saved, so nothing is cleaned up: both files stay for the row to point at.
@@ -441,11 +443,15 @@ async def test_a_successful_upload_deletes_nothing(
 # --- metadata ------------------------------------------------------------------------------
 
 
-def a_phone_photo(image_format: str = "JPEG") -> bytes:
-    """A photo with its position and camera in EXIF, turned a quarter turn, as phones write it."""
+def a_phone_photo(image_format: str = "JPEG", make: str = "TestCam") -> bytes:
+    """A photo with its position and camera in EXIF, turned a quarter turn, as phones write it.
+
+    The pixels are always the same, and Pillow encodes them the same way, so two calls with
+    another `make` give the same picture with other metadata.
+    """
     exif = Image.Exif()
     exif[Base.Orientation] = 6
-    exif[Base.Make] = "TestCam"
+    exif[Base.Make] = make
     exif[IFD.GPSInfo] = {GPS.GPSLatitudeRef: "N", GPS.GPSLatitude: (52.0, 31.0, 12.0)}
     return encode(Image.new("RGB", (640, 480), "teal"), image_format, exif=exif)
 
@@ -489,6 +495,62 @@ async def test_a_re_upload_of_the_same_photo_still_finds_the_stripped_one(
     assert store.objects == {}
 
 
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+async def test_a_new_photo_is_inserted_with_the_hashes_of_the_upload_and_of_the_stored_file(
+    service: UploadService, store: InMemoryObjectStore, repo: InMemoryImageRepo
+) -> None:
+    data = a_phone_photo()
+
+    record = (await service.upload(USER_ID, "beach.jpg", data)).record
+
+    stored, _ = store.objects[record.original_path]
+    [new_image] = repo.inserted
+    assert new_image.content_sha256 == sha256_hex(data)
+    assert new_image.stored_sha256 == sha256_hex(stored) != new_image.content_sha256
+    # One lookup asks for both.
+    assert repo.lookups == [[sha256_hex(data), sha256_hex(stored)]]
+
+
+async def test_the_same_picture_with_other_metadata_is_a_duplicate(
+    service: UploadService, store: InMemoryObjectStore, repo: InMemoryImageRepo
+) -> None:
+    first = a_phone_photo(make="TestCam")
+    retagged = a_phone_photo(make="OtherCam")
+    assert sha256_hex(retagged) != sha256_hex(first)
+    existing = an_existing_image(first)
+    # The repo matches the stored hash of the first upload.
+    repo.existing[sha256_hex(strip_metadata(first, "image/jpeg"))] = existing
+
+    result = await service.upload(USER_ID, "retagged.jpg", retagged)
+
+    assert result.created is False
+    assert result.record.id == existing.id
+    assert repo.bumped == [existing.id]
+    assert store.objects == {}
+    assert repo.inserted == []
+
+
+async def test_a_downloaded_original_uploaded_again_is_a_duplicate(
+    service: UploadService, store: InMemoryObjectStore, repo: InMemoryImageRepo
+) -> None:
+    first = a_phone_photo()
+    downloaded = strip_metadata(first, "image/jpeg")
+    existing = an_existing_image(first)
+    repo.existing[sha256_hex(downloaded)] = existing
+
+    result = await service.upload(USER_ID, "downloaded.jpg", downloaded)
+
+    assert result.created is False
+    assert result.record.id == existing.id
+    assert store.objects == {}
+    # Stripping a stripped file changes nothing, so the upload's own hash is the stored hash, and
+    # the lookup asks for it once.
+    assert repo.lookups == [[sha256_hex(downloaded)]]
+
+
 async def test_an_original_the_stripper_cannot_parse_is_refused_and_nothing_is_stored(
     service: UploadService,
     store: InMemoryObjectStore,
@@ -522,6 +584,7 @@ def an_existing_image(data: bytes, image_id: int = 7) -> ImageRecord:
             width=640,
             height=480,
             content_sha256=hashlib.sha256(data).hexdigest(),
+            stored_sha256=hashlib.sha256(data).hexdigest(),
         ),
     )
 
