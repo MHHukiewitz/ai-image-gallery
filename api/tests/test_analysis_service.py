@@ -10,8 +10,16 @@ from PIL import Image
 from gallery.domain.colors import dominant_colors
 from gallery.domain.embedding_text import embedding_text
 from gallery.domain.errors import AnalyzerError, TagVerificationError
-from gallery.domain.models import Analysis, AnalysisJob, AnalysisUsage, TagVerdict
+from gallery.domain.models import (
+    Analysis,
+    AnalysisStatus,
+    AnalysisTarget,
+    AnalysisUsage,
+    Job,
+    TagVerdict,
+)
 from gallery.services.analysis import (
+    ANALYZE_IMAGE,
     UNDECODABLE_IMAGE_ERROR,
     UNEXPECTED_ERROR,
     AnalysisService,
@@ -20,6 +28,8 @@ from gallery.services.analysis import (
 SERVICE_LOGGER = "gallery.services.analysis"
 ANALYZER_ID = "test:model:v1"
 SHA = "a" * 64
+JOB_ID = 42
+IMAGE_ID = 7
 
 ANALYSIS = Analysis(tags=("red", "square", "bright", "sample", "test"), description="A red square.")
 
@@ -30,33 +40,66 @@ def png_bytes() -> bytes:
     return out.getvalue()
 
 
-def make_job(*, attempts: int = 1, path: str = "u/i/original.png") -> AnalysisJob:
-    return AnalysisJob(
-        image_id=7,
-        user_id=UUID(int=1),
-        original_path=path,
+def make_job(*, attempts: int = 1) -> Job:
+    return Job(
+        id=JOB_ID, kind=ANALYZE_IMAGE, image_id=IMAGE_ID, user_id=UUID(int=1), attempts=attempts
+    )
+
+
+def make_target(
+    status: AnalysisStatus = AnalysisStatus.PROCESSING, error: str | None = None
+) -> AnalysisTarget:
+    """The image as the worker finds it right after its claim, unless told otherwise."""
+    return AnalysisTarget(
+        image_id=IMAGE_ID,
+        original_path="u/i/original.png",
         content_sha256=SHA,
-        attempts=attempts,
+        status=status,
+        error=error,
     )
 
 
 @dataclass
 class FakeQueue:
+    target: AnalysisTarget | None = field(default_factory=make_target)
+    # complete_analysis and fail_analysis calls.
     completed: list[dict[str, object]] = field(default_factory=list)
     failed: list[dict[str, object]] = field(default_factory=list)
+    # complete and fail calls, which end a job without touching its image.
+    closed: list[int] = field(default_factory=list)
+    jobs_failed: list[dict[str, object]] = field(default_factory=list)
     embeddings: list[tuple[int, tuple[float, ...], str]] = field(default_factory=list)
     # "complete" and "store_embedding", in the order they were called.
     events: list[str] = field(default_factory=list)
+    target_error: Exception | None = None
     complete_error: Exception | None = None
     fail_error: Exception | None = None
+    close_error: Exception | None = None
     store_embedding_error: Exception | None = None
 
-    async def claim(self, limit: int) -> list[AnalysisJob]:
+    async def claim(self, kinds: Sequence[str], limit: int) -> list[Job]:
         raise NotImplementedError
 
-    async def complete(
+    async def analysis_target(self, job_id: int) -> AnalysisTarget | None:
+        if self.target_error:
+            raise self.target_error
+        return self.target
+
+    async def complete(self, job_id: int) -> None:
+        if self.close_error:
+            raise self.close_error
+        self.closed.append(job_id)
+
+    async def fail(self, job_id: int, *, error: str, retryable: bool) -> None:
+        if self.close_error:
+            raise self.close_error
+        if self.fail_error:
+            raise self.fail_error
+        self.jobs_failed.append({"job_id": job_id, "error": error, "retryable": retryable})
+
+    async def complete_analysis(
         self,
-        image_id: int,
+        job_id: int,
         *,
         tags: Sequence[str],
         description: str,
@@ -68,7 +111,7 @@ class FakeQueue:
         self.events.append("complete")
         self.completed.append(
             {
-                "image_id": image_id,
+                "job_id": job_id,
                 "tags": tuple(tags),
                 "description": description,
                 "colors": tuple(colors),
@@ -82,14 +125,14 @@ class FakeQueue:
         self.events.append("store_embedding")
         self.embeddings.append((image_id, tuple(vector), model_id))
 
-    async def fail(
-        self, image_id: int, *, error: str, colors: Sequence[str], retryable: bool
+    async def fail_analysis(
+        self, job_id: int, *, error: str, colors: Sequence[str], retryable: bool
     ) -> None:
         if self.fail_error:
             raise self.fail_error
         self.failed.append(
             {
-                "image_id": image_id,
+                "job_id": job_id,
                 "error": error,
                 "colors": tuple(colors),
                 "retryable": retryable,
@@ -196,7 +239,7 @@ async def test_success_completes_with_the_colors_and_the_tags() -> None:
 
     assert rig.queue.completed == [
         {
-            "image_id": 7,
+            "job_id": JOB_ID,
             "tags": ANALYSIS.tags,
             "description": ANALYSIS.description,
             "colors": dominant_colors(png_bytes()),
@@ -246,7 +289,7 @@ async def test_retryable_analyzer_error_fails_the_attempt_and_keeps_the_colors()
 
     assert rig.queue.failed == [
         {
-            "image_id": 7,
+            "job_id": JOB_ID,
             "error": "The provider is busy",
             "colors": dominant_colors(png_bytes()),
             "retryable": True,
@@ -264,7 +307,7 @@ async def test_non_retryable_analyzer_error_fails_for_good() -> None:
 
     assert rig.queue.failed == [
         {
-            "image_id": 7,
+            "job_id": JOB_ID,
             "error": "The API key was rejected",
             "colors": dominant_colors(png_bytes()),
             "retryable": False,
@@ -280,7 +323,7 @@ async def test_corrupt_image_fails_for_good_without_calling_the_analyzer() -> No
 
     assert rig.queue.failed == [
         {
-            "image_id": 7,
+            "job_id": JOB_ID,
             "error": UNDECODABLE_IMAGE_ERROR,
             "colors": (),
             "retryable": False,
@@ -299,7 +342,7 @@ async def test_unexpected_exception_is_retryable_with_a_generic_message() -> Non
 
     assert rig.queue.failed == [
         {
-            "image_id": 7,
+            "job_id": JOB_ID,
             "error": UNEXPECTED_ERROR,
             "colors": dominant_colors(png_bytes()),
             "retryable": True,
@@ -316,7 +359,7 @@ async def test_a_storage_failure_is_unexpected_and_has_no_colors_yet() -> None:
     await rig.service.process(make_job())
 
     assert rig.queue.failed == [
-        {"image_id": 7, "error": UNEXPECTED_ERROR, "colors": (), "retryable": True}
+        {"job_id": JOB_ID, "error": UNEXPECTED_ERROR, "colors": (), "retryable": True}
     ]
     assert rig.analyzer.calls == []
 
@@ -329,6 +372,104 @@ async def test_a_failing_complete_is_retried_as_an_unexpected_error() -> None:
 
     assert rig.queue.failed[0]["retryable"] is True
     assert rig.queue.failed[0]["error"] == UNEXPECTED_ERROR
+
+
+# --- the analysis already ended ---------------------------------------------------------------
+# Uploads that arrive between the jobs migration and the deploy are analyzed by the worker from
+# before the jobs table, while their jobs wait. The new worker then finds them finished.
+
+
+async def test_an_already_done_image_completes_its_job_without_calling_the_analyzer(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rig = make_rig()
+    rig.queue.target = make_target(AnalysisStatus.DONE)
+
+    await rig.service.process(make_job())
+
+    assert rig.analyzer.calls == []
+    assert rig.queue.closed == [JOB_ID]
+    # The image keeps the result it has.
+    assert rig.queue.completed == []
+    assert rig.queue.failed == []
+    assert rig.cache.entries == {}
+    line = job_line(caplog)
+    assert (line.levelno, line.outcome, line.analysis_status, line.job_id) == (
+        logging.INFO,
+        "skipped",
+        "done",
+        JOB_ID,
+    )
+
+
+async def test_an_already_failed_image_fails_its_job_the_same_way_without_the_analyzer() -> None:
+    rig = make_rig()
+    rig.queue.target = make_target(AnalysisStatus.FAILED, error=UNDECODABLE_IMAGE_ERROR)
+
+    await rig.service.process(make_job())
+
+    assert rig.analyzer.calls == []
+    assert rig.queue.jobs_failed == [
+        {"job_id": JOB_ID, "error": UNDECODABLE_IMAGE_ERROR, "retryable": False}
+    ]
+    assert rig.queue.closed == []
+    assert rig.queue.failed == []
+
+
+@pytest.mark.parametrize("status", [AnalysisStatus.PENDING, AnalysisStatus.PROCESSING])
+async def test_an_image_still_waiting_for_its_analysis_is_analyzed(status: AnalysisStatus) -> None:
+    rig = make_rig()
+    rig.queue.target = make_target(status)
+
+    await rig.service.process(make_job())
+
+    assert len(rig.analyzer.calls) == 1
+    assert len(rig.queue.completed) == 1
+    assert rig.queue.closed == []
+
+
+async def test_a_deleted_image_closes_the_job_without_analysis(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rig = make_rig()
+    rig.queue.target = None
+
+    await rig.service.process(make_job())
+
+    assert rig.analyzer.calls == []
+    assert rig.queue.closed == [JOB_ID]
+    assert job_line(caplog).outcome == "skipped"
+
+
+async def test_a_job_that_cannot_be_closed_is_left_for_the_stale_reclaim(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rig = make_rig()
+    rig.queue.target = make_target(AnalysisStatus.DONE)
+    rig.queue.close_error = ConnectionError("database is down")
+
+    await rig.service.process(make_job())
+
+    warnings = [r for r in caplog.records if r.getMessage().startswith("could not close")]
+    assert [r.levelno for r in warnings] == [logging.WARNING]
+    assert worst_level(caplog) == logging.WARNING
+    assert rig.analyzer.calls == []
+
+
+async def test_a_failed_lookup_fails_only_the_job(caplog: pytest.LogCaptureFixture) -> None:
+    rig = make_rig()
+    rig.queue.target_error = ConnectionError("database is down")
+
+    await rig.service.process(make_job())
+
+    assert rig.queue.jobs_failed == [
+        {"job_id": JOB_ID, "error": UNEXPECTED_ERROR, "retryable": True}
+    ]
+    # Nothing was read, so the image's colors are left as they are.
+    assert rig.queue.failed == []
+    assert rig.analyzer.calls == []
+    line = job_line(caplog)
+    assert (line.levelno, line.outcome) == (logging.ERROR, "retry")
 
 
 # --- never raises -----------------------------------------------------------------------------

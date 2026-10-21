@@ -6,9 +6,10 @@ from typing import Protocol
 
 from gallery.domain.models import (
     Analysis,
-    AnalysisJob,
+    AnalysisTarget,
     GalleryQuery,
     ImageRecord,
+    Job,
     NewImage,
     Page,
     TagVerdict,
@@ -71,11 +72,23 @@ class TagVerifier(Protocol):
 
 
 class JobQueue(Protocol):
-    async def claim(self, limit: int) -> list[AnalysisJob]: ...
+    # Takes up to `limit` due jobs of the given kinds, oldest first, and marks them 'processing'.
+    # A job whose worker went quiet is taken over, and every claim counts as an attempt.
+    async def claim(self, kinds: Sequence[str], limit: int) -> list[Job]: ...
 
-    async def complete(
+    # A job that is gone (its image was deleted) is not an error, here and below.
+    async def complete(self, job_id: int) -> None: ...
+
+    # Records a failed attempt. The queue decides between a retry and the end.
+    async def fail(self, job_id: int, *, error: str, retryable: bool) -> None: ...
+
+    # The image of an analyze_image job. None when the image was deleted.
+    async def analysis_target(self, job_id: int) -> AnalysisTarget | None: ...
+
+    # Stores the analysis on the image and completes its job, in one transaction.
+    async def complete_analysis(
         self,
-        image_id: int,
+        job_id: int,
         *,
         tags: Sequence[str],
         description: str,
@@ -83,17 +96,19 @@ class JobQueue(Protocol):
         analyzer_id: str,
     ) -> None: ...
 
-    async def fail(
+    # Records a failed analysis attempt, as `fail` does, and stores the colors either way.
+    async def fail_analysis(
         self,
-        image_id: int,
+        job_id: int,
         *,
         error: str,
         colors: Sequence[str],
         retryable: bool,
     ) -> None: ...
 
-    # Attaches the embedding of the image's final tags and description. Call it after `complete`:
-    # completing an analysis drops an embedding that no longer matches the new text.
+    # Attaches the embedding of the image's final tags and description. Call it after
+    # `complete_analysis`: completing an analysis drops an embedding that no longer matches the new
+    # text.
     async def store_embedding(
         self, image_id: int, vector: Sequence[float], model_id: str
     ) -> None: ...
