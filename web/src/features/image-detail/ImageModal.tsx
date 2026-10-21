@@ -146,8 +146,10 @@ function preloadOriginal(queryClient: QueryClient, imageId: number): void {
 }
 
 function ChevronIcon({ direction }: { direction: Step }) {
+  // shrink-0: from `sm` the button is 32 px wide, and its 12 px side padding would otherwise
+  // squeeze the icon to 8 px. justify-center keeps it centered as it overlaps the padding.
   return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-4">
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-5 shrink-0">
       <path
         d={direction === "previous" ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6"}
         stroke="currentColor"
