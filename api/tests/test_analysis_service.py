@@ -1,5 +1,7 @@
 import io
 import logging
+import struct
+import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -18,6 +20,7 @@ from gallery.domain.models import (
     Job,
     TagVerdict,
 )
+from gallery.services import analysis as analysis_module
 from gallery.services.analysis import (
     ANALYZE_IMAGE,
     UNDECODABLE_IMAGE_ERROR,
@@ -30,6 +33,8 @@ ANALYZER_ID = "test:model:v1"
 SHA = "a" * 64
 JOB_ID = 42
 IMAGE_ID = 7
+MAX_BYTES = 1024 * 1024
+MAX_PIXELS = 1_000_000
 
 ANALYSIS = Analysis(tags=("red", "square", "bright", "sample", "test"), description="A red square.")
 
@@ -38,6 +43,26 @@ def png_bytes() -> bytes:
     out = io.BytesIO()
     Image.new("RGB", (64, 64), (200, 30, 30)).save(out, format="PNG")
     return out.getvalue()
+
+
+def bomb_png_bytes(width: int, height: int) -> bytes:
+    """A few dozen bytes of PNG whose header claims a `width` by `height` canvas.
+
+    Nothing could decode it, which is the point: only the header is ever read.
+    """
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(b"\x00" * 16))
+        + chunk(b"IEND", b"")
+    )
 
 
 def make_job(*, attempts: int = 1) -> Job:
@@ -209,7 +234,15 @@ class Rig:
 def make_rig(*, image: bytes | None = None, max_attempts: int = 3) -> Rig:
     queue, analyzer, cache = FakeQueue(), ScriptedAnalyzer(), FakeCache()
     store = FakeStore({"u/i/original.png": png_bytes() if image is None else image})
-    service = AnalysisService(queue, store, analyzer, cache, max_attempts=max_attempts)
+    service = AnalysisService(
+        queue,
+        store,
+        analyzer,
+        cache,
+        max_bytes=MAX_BYTES,
+        max_pixels=MAX_PIXELS,
+        max_attempts=max_attempts,
+    )
     return Rig(queue, store, analyzer, cache, service)
 
 
@@ -332,6 +365,64 @@ async def test_corrupt_image_fails_for_good_without_calling_the_analyzer() -> No
     assert UNDECODABLE_IMAGE_ERROR == "Image could not be decoded"
     assert rig.analyzer.calls == []
     assert rig.queue.completed == []
+
+
+def forbid_decoding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any decode fail the test, to show the limits are checked before the pixels."""
+
+    def decode(data: bytes) -> tuple[str, ...]:
+        raise AssertionError("the image was decoded")
+
+    monkeypatch.setattr(analysis_module, "dominant_colors", decode)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        pytest.param(bomb_png_bytes(100_000, 100_000), id="header-claims-too-many-pixels"),
+        pytest.param(bomb_png_bytes(1001, 1000), id="one-pixel-too-many"),
+        pytest.param(png_bytes() + b"\0" * MAX_BYTES, id="too-many-bytes"),
+    ],
+)
+async def test_an_image_over_the_limits_fails_for_good_before_it_is_decoded(
+    image: bytes, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    forbid_decoding(monkeypatch)
+    rig = make_rig(image=image)
+
+    await rig.service.process(make_job())
+
+    assert rig.queue.failed == [
+        {
+            "job_id": JOB_ID,
+            "error": UNDECODABLE_IMAGE_ERROR,
+            "colors": (),
+            "retryable": False,
+        }
+    ]
+    assert rig.analyzer.calls == []
+    assert rig.cache.entries == {}
+    assert rig.queue.completed == []
+    assert job_line(caplog).levelno == logging.INFO
+    assert worst_level(caplog) == logging.INFO
+
+
+async def test_an_image_exactly_at_the_limits_is_analyzed() -> None:
+    image = png_bytes()  # 64 by 64
+    rig = make_rig(image=image)
+    rig.service = AnalysisService(
+        rig.queue,
+        rig.store,
+        rig.analyzer,
+        rig.cache,
+        max_bytes=len(image),
+        max_pixels=64 * 64,
+    )
+
+    await rig.service.process(make_job())
+
+    assert len(rig.queue.completed) == 1
+    assert rig.queue.failed == []
 
 
 async def test_unexpected_exception_is_retryable_with_a_generic_message() -> None:
@@ -696,6 +787,8 @@ def make_verified_rig(verifier: ScriptedVerifier, *, min_tag_probability: float 
         rig.store,
         rig.analyzer,
         rig.cache,
+        max_bytes=MAX_BYTES,
+        max_pixels=MAX_PIXELS,
         verifier=verifier,
         min_tag_probability=min_tag_probability,
     )
@@ -916,7 +1009,14 @@ def make_embedding_rig(embedder: ScriptedEmbedder, verifier: ScriptedVerifier | 
     rig = make_rig()
     rig.analyzer.result = EIGHT_TAGS
     rig.service = AnalysisService(
-        rig.queue, rig.store, rig.analyzer, rig.cache, verifier=verifier, embedder=embedder
+        rig.queue,
+        rig.store,
+        rig.analyzer,
+        rig.cache,
+        max_bytes=MAX_BYTES,
+        max_pixels=MAX_PIXELS,
+        verifier=verifier,
+        embedder=embedder,
     )
     return rig
 
