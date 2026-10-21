@@ -138,8 +138,17 @@ def _random_png() -> bytes:
     return buffer.getvalue()
 
 
-async def _upload(owner: Owner, data: bytes, *, filename: str = "photo.png") -> ImageRecord:
-    """Store `data` and insert the image with its pending metadata, as the API's upload does."""
+async def _upload(
+    owner: Owner,
+    data: bytes,
+    *,
+    filename: str = "photo.png",
+    content_sha256: str | None = None,
+) -> ImageRecord:
+    """Store `data` and insert the image with its pending metadata, as the API's upload does.
+
+    `content_sha256` overrides the row's hash, as a user inserting through PostgREST can.
+    """
     folder = f"{owner.id}/{uuid.uuid4()}"
     original_path = f"{folder}/original.png"
     await owner.objects.put(original_path, data, "image/png")
@@ -154,7 +163,7 @@ async def _upload(owner: Owner, data: bytes, *, filename: str = "photo.png") -> 
             size_bytes=len(data),
             width=48,
             height=32,
-            content_sha256=hashlib.sha256(data).hexdigest(),
+            content_sha256=content_sha256 or hashlib.sha256(data).hexdigest(),
         )
     )
 
@@ -391,6 +400,40 @@ async def test_the_same_bytes_uploaded_again_are_served_from_the_cache(
     assert lines[first.id].cache_hit is False
     assert lines[second.id].cache_hit is True
     assert (second_done.tags, second_done.description) == (first_done.tags, first_done.description)
+
+
+async def test_a_forged_content_hash_neither_reads_nor_writes_another_files_cache_entry(
+    stack_settings: Settings, owner: Owner, secret_client: AsyncClient
+) -> None:
+    cache = SupabaseAnalysisCache(secret_client)
+    # Someone else's file, already analyzed: its entry holds a recognizable description.
+    victim_sha = hashlib.sha256(b"forged_hash_test victim " + uuid.uuid4().bytes).hexdigest()
+    victims_entry = Analysis(
+        tags=("victim", "tags", "from", "the", "cache"), description="The victim's picture."
+    )
+    await cache.put(victim_sha, FAKE_ANALYZER_ID, victims_entry)
+    # A popular file nobody has analyzed yet: the poisoning attack targets its future entry.
+    unanalyzed_sha = hashlib.sha256(b"forged_hash_test popular " + uuid.uuid4().bytes).hexdigest()
+    data = _random_png()
+    own_sha = hashlib.sha256(data).hexdigest()
+    reads = await _upload(owner, data, filename="reads.png", content_sha256=victim_sha)
+    writes = await _upload(
+        owner, _random_png(), filename="writes.png", content_sha256=unanalyzed_sha
+    )
+
+    async with _running_worker(stack_settings) as task:
+        read_done = await _wait_for(owner, reads.id, task, _is_finished)
+        write_done = await _wait_for(owner, writes.id, task, _is_finished)
+
+    assert (read_done.status, write_done.status) == (AnalysisStatus.DONE, AnalysisStatus.DONE)
+    # The forged hash did not return the victim's entry: the image was analyzed on its own bytes.
+    assert read_done.description != victims_entry.description
+    assert await cache.get(victim_sha, FAKE_ANALYZER_ID) == victims_entry
+    # Nothing was written under the forged hash; the result went under the real digest.
+    assert await cache.get(unanalyzed_sha, FAKE_ANALYZER_ID) is None
+    assert await cache.get(own_sha, FAKE_ANALYZER_ID) == Analysis(
+        tags=read_done.tags, description=read_done.description
+    )
 
 
 async def test_a_corrupt_upload_fails_at_once_and_is_not_retried(
