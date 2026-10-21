@@ -13,7 +13,7 @@ The clip is 20 seconds, recorded with Playwright on the local stack. It uses fou
   <img src="docs/screenshots/desktop-similar.png" alt="Find similar results on desktop" width="49%">
 </p>
 
-**Status:** all features are merged. The per-user upload quota ([#77](https://github.com/MHHukiewitz/ai-image-gallery/issues/77)) is in progress.
+**Status:** every feature is merged and live.
 
 **Start here:** [architecture](docs/architecture.md) · [AI service decision](docs/ai-service-choice.md) · [deployment runbook](docs/deploy.md) · [how the work was split](docs/critical-path.md) · [contributor rules](AGENTS.md)
 
@@ -38,7 +38,7 @@ Beyond the brief:
 - [x] **Duplicates move to the top** instead of being stored twice. A batch endpoint handles a whole drop. · [`20261020000009_dedupe_and_bump.sql`](supabase/migrations/20261020000009_dedupe_and_bump.sql), [`20261020000011_bump_images_batch.sql`](supabase/migrations/20261020000011_bump_images_batch.sql), [upload routes](api/src/gallery/api/routes/uploads.py)
 - [x] **Semantic matching** with a small local embedding model: no API key and no extra service. Vectors live in the same Postgres, in pgvector. · [`adapters/embeddings/fastembed.py`](api/src/gallery/adapters/embeddings/fastembed.py), [`20261020000008_image_embeddings.sql`](supabase/migrations/20261020000008_image_embeddings.sql)
 - [x] **Optional tag verifier** (TypeSafe Jev), off by default. · [`adapters/verifiers/jev.py`](api/src/gallery/adapters/verifiers/jev.py), [decision record §3](docs/ai-service-choice.md#optional-second-stage-tag-verification-with-jev-50)
-- [ ] **Upload quota**: 300 new images per user in any rolling 24 hours, with exemptions set on the server. In progress as [#77](https://github.com/MHHukiewitz/ai-image-gallery/issues/77).
+- [x] **Upload quota**: 300 new images per user in any rolling 24 hours, with exemptions set on the server. Re-uploads don't count, and a refused drop pauses the queue with one message. · [`services/uploads.py`](api/src/gallery/services/uploads.py), [`useUploads`](web/src/features/upload/useUploads.ts)
 
 ## Architecture at a glance
 
@@ -174,6 +174,8 @@ On 2026-10-20, production showed four problems. Each has a fix and a test.
 - Turn email confirmation back on, with SMTP through Resend.
 - Strip EXIF metadata, or at least GPS tags, from originals.
 - Stop passing the whole `.env` to the local API container, and list its variables as production does.
+- Count deleted images toward the upload quota. The count only sees images that still exist, so deleting some frees their slots.
+- Match quota exemptions on user IDs instead of emails. An email is only proof of ownership once confirmation is back on.
 - Replace polling with a realtime channel.
 - Replace the per-column job state with a generic jobs table, so other background work can reuse the queue.
 - Recalibrate the semantic thresholds if the embedding model changes ([architecture §8](docs/architecture.md#8-similarity-embeddings-in-postgres-no-vector-db-service)).
