@@ -51,6 +51,7 @@ from gallery.domain.models import (
     TagVerdict,
 )
 from gallery.domain.tags import select_tags
+from gallery.domain.validation import inspect_image
 from gallery.ports import (
     AnalysisCache,
     ImageAnalyzer,
@@ -117,12 +118,18 @@ class AnalysisService:
         analyzer: ImageAnalyzer,
         cache: AnalysisCache,
         *,
+        max_bytes: int,
+        max_pixels: int,
         max_attempts: int = 3,
         verifier: TagVerifier | None = None,
         min_tag_probability: float = 0.5,
         embedder: TextEmbedder | None = None,
     ) -> None:
-        """`max_attempts` must match the queue's. It only tells a "retry" from a final "failed"
+        """`max_bytes` and `max_pixels` are the upload limits. The API enforces them on its own
+        uploads, but a row inserted straight through PostgREST skips that, so the worker checks the
+        stored bytes against them before it decodes a pixel.
+
+        `max_attempts` must match the queue's. It only tells a "retry" from a final "failed"
         in the log line, because the database makes that call.
 
         With a `verifier`, the analyzer's tags (cached or fresh) are checked against the image and
@@ -137,6 +144,8 @@ class AnalysisService:
         self._store = store
         self._analyzer = analyzer
         self._cache = cache
+        self._max_bytes = max_bytes
+        self._max_pixels = max_pixels
         self._max_attempts = max_attempts
         self._verifier = verifier
         self._min_tag_probability = min_tag_probability
@@ -177,7 +186,7 @@ class AnalysisService:
         try:
             data = await self._store.get(target.original_path)
             # Decoding and quantizing are CPU work, so keep them off the event loop.
-            colors = await asyncio.to_thread(dominant_colors, data)
+            colors = await asyncio.to_thread(self._inspect_then_colors, data)
             analysis, cache_hit = await self._analysis_for(target, data)
             tags, verification = await self._verified_tags(target, data, analysis)
             await self._queue.complete_analysis(
@@ -232,6 +241,15 @@ class AnalysisService:
                 verification=verification,
                 embedding=embedding,
             )
+
+    def _inspect_then_colors(self, data: bytes) -> tuple[str, ...]:
+        """Refuse bytes over the upload limits, then find the colors.
+
+        The check reads only the header, so it runs before anything allocates a pixel buffer.
+        Raises InvalidImageError.
+        """
+        inspect_image(data, max_bytes=self._max_bytes, max_pixels=self._max_pixels)
+        return dominant_colors(data)
 
     async def _close_finished(
         self, job: Job, target: AnalysisTarget | None, started: float

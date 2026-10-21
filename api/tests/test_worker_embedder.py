@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from PIL import Image
 
 from gallery import worker
 from gallery.adapters.embeddings import FastEmbedEmbedder
@@ -44,6 +45,8 @@ def connections(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr(worker, "close_client", close)
     monkeypatch.setattr(worker, "work_loop", no_loop)
     monkeypatch.setattr(worker, "AnalysisService", RecordingService)
+    # `run` lowers Pillow's pixel limit for the whole process, so give it back after the test.
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", Image.MAX_IMAGE_PIXELS)
     return attempts
 
 

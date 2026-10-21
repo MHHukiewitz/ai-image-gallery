@@ -3,9 +3,12 @@ import logging
 import os
 import signal
 from collections.abc import Awaitable, Callable, Mapping
+from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
+from PIL import Image
 
 from gallery import worker
 from gallery.config import Settings
@@ -747,3 +750,55 @@ def test_main_sets_up_observability_before_running(
     worker.main()
 
     assert calls == ["init_observability:worker", "run"]
+
+
+# --- wiring -----------------------------------------------------------------------------------
+
+
+class RecordingService:
+    """Stands in for AnalysisService and remembers how the worker built it."""
+
+    instances: list["RecordingService"] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        RecordingService.instances.append(self)
+
+    async def process(self, job: object) -> None:
+        raise NotImplementedError
+
+
+@pytest.fixture
+def wired_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub everything `run` reaches the network through, and restore Pillow's global limit."""
+    RecordingService.instances = []
+
+    async def connect(settings: Settings) -> object:
+        return MagicMock()
+
+    async def close(client: object) -> None:
+        return None
+
+    async def no_loop(*args: object, **kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(worker, "service_client", connect)
+    monkeypatch.setattr(worker, "close_client", close)
+    monkeypatch.setattr(worker, "work_loop", no_loop)
+    monkeypatch.setattr(worker, "AnalysisService", RecordingService)
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", Image.MAX_IMAGE_PIXELS)
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "test-secret")
+
+
+async def test_the_upload_limits_go_to_the_service(wired_worker: None) -> None:
+    await worker.run(Settings(MAX_UPLOAD_MB=3, MAX_IMAGE_PIXELS=1234), asyncio.Event())
+
+    (service,) = RecordingService.instances
+    assert service.kwargs["max_bytes"] == 3 * 1024 * 1024
+    assert service.kwargs["max_pixels"] == 1234
+
+
+async def test_the_worker_sets_pillows_pixel_limit(wired_worker: None) -> None:
+    await worker.run(Settings(MAX_IMAGE_PIXELS=1234), asyncio.Event())
+
+    assert Image.MAX_IMAGE_PIXELS == 1234

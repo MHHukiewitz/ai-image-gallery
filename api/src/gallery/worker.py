@@ -11,6 +11,8 @@ import logging
 import signal
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 
+from PIL import Image
+
 from gallery.adapters.analyzers import build_analyzer
 from gallery.adapters.embeddings import build_embedder
 from gallery.adapters.supabase_cache import SupabaseAnalysisCache
@@ -56,6 +58,9 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
     analyzer = build_analyzer(settings)
     verifier = build_tag_verifier(settings)
     embedder = build_embedder(settings)
+    # Backstop for the AnalysisService check: a decode that gets past it fails instead of
+    # allocating without bound (Pillow raises above twice this, and warns between one and two).
+    Image.MAX_IMAGE_PIXELS = settings.MAX_IMAGE_PIXELS
     client = await service_client(settings)
     try:
         queue = SupabaseJobQueue(
@@ -68,6 +73,8 @@ async def run(settings: Settings, stop: asyncio.Event | None = None) -> None:
             SupabaseObjectStore(client, settings.STORAGE_BUCKET),
             analyzer,
             SupabaseAnalysisCache(client),
+            max_bytes=settings.MAX_UPLOAD_MB * 1024 * 1024,
+            max_pixels=settings.MAX_IMAGE_PIXELS,
             max_attempts=settings.JOB_MAX_ATTEMPTS,
             verifier=verifier,
             min_tag_probability=settings.TAG_MIN_PROBABILITY,
