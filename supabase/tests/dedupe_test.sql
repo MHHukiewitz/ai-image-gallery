@@ -93,13 +93,15 @@ select is(
 -- Its timestamp equals what a bump sets in this transaction, which would make the order below a tie.
 delete from public.images where filename = 'a-old-copy.jpg';
 
--- image_details gains the column at the end and keeps its options and grants.
+-- image_details gained the column at the end and keeps its options and grants. Only
+-- stored_sha256 (#113) has been added after it since.
 select is(
-  (select attname::text from pg_attribute
-   where attrelid = 'public.image_details'::regclass and attnum > 0 and not attisdropped
-   order by attnum desc limit 1),
-  'last_uploaded_at',
-  'last_uploaded_at is the last column of image_details'
+  (select array_agg(attname::text order by attnum) from (
+     select attname, attnum from pg_attribute
+     where attrelid = 'public.image_details'::regclass and attnum > 0 and not attisdropped
+     order by attnum desc limit 2) as last_two),
+  array['last_uploaded_at', 'stored_sha256'],
+  'last_uploaded_at comes right after the original columns, with only stored_sha256 after it'
 );
 select is(
   (select reloptions from pg_class where oid = 'public.image_details'::regclass),
