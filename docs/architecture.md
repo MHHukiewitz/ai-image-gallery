@@ -213,6 +213,8 @@ jobs(
 
 **Storage.** A private bucket named `images`. The `select`, `insert` and `delete` policies on `storage.objects` require `(storage.foldername(name))[1] = (select auth.uid())::text`.
 
+**Storage quota.** The policies alone let a user upload any number of objects into their own folder without creating an `images` row, which the upload quota never counts, and one full bucket breaks uploads for every tenant. The `enforce_storage_quota` trigger (`before insert` on `storage.objects`, `images` bucket only, `security definer`) refuses a new object once the first folder of its key already holds `quota_settings.max_storage_objects` objects (default 2000, which is 1000 images; `0` turns it off). Users in `quota_exempt_users` take no limit. It counts objects, not bytes, because a `before insert` trigger can't rely on knowing the new object's size; with the bucket's 10 MB `file_size_limit`, N objects bound a user to N × 10 MB. Deleting an image frees its slots at once, unlike the upload quota. The trigger raises `PT429`, which storage-api answers as a 500 naming that code; `SupabaseObjectStore.put` turns it into `QuotaExceededError`, so the API answers 429 `quota_exceeded` with `Retry-After: 60`, and the upload service removes the original if the thumbnail was the one refused.
+
 **Queue RPCs.** These are `security definer` and `grant execute` to `service_role` only:
 
 - Generic: `claim_jobs(kinds, n, stale_after_seconds, max_attempts)`, `complete_job(job_id)` and `fail_job(job_id, error, max_attempts, retryable)`
