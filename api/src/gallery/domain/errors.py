@@ -37,5 +37,18 @@ class TagVerificationError(GalleryError):
     """The tag verifier couldn't check the tags. The analyzer's tags are kept as they are."""
 
 
+class QuotaExceededError(GalleryError):
+    """The user has used up the daily upload quota. The API answers 429 with `Retry-After`.
+
+    `retry_after_seconds` is an upper bound: the quota counts a rolling window, so a slot is free
+    again no later than that many seconds from now.
+    """
+
+    def __init__(self, message: str, retry_after_seconds: int) -> None:
+        super().__init__(message)
+        self.message = message
+        self.retry_after_seconds = retry_after_seconds
+
+
 class AuthError(GalleryError):
     """The request has no valid Supabase session."""
