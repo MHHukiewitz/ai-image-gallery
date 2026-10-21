@@ -41,8 +41,9 @@ class ImageRepo(Protocol):
 
     async def request_reanalysis(self, image_id: int) -> bool: ...
 
-    # Counts the caller's images uploaded at or after `since`. Only the number comes back, which is
-    # all the daily quota needs. Bumps don't move `uploaded_at`, so they don't count.
+    # Counts the caller's uploads at or after `since`, including images deleted since, so deleting
+    # doesn't free quota. Only the number comes back, which is all the daily quota needs. A bump
+    # stores no new image, so it doesn't count.
     async def count_uploaded_since(self, since: datetime) -> int: ...
 
 
