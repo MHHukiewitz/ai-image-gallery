@@ -121,3 +121,18 @@ flowchart LR
 | **Mike** | Accounts, DNS and secrets, which agents must not handle | #26, #27, #28, #30 (optional) |
 
 Each issue states its own model and rationale. This table is the summary.
+
+## Final status
+
+Written with the README pass ([#25](https://github.com/MHHukiewitz/ai-image-gallery/issues/25)), on 2026-10-20. The site is live at https://gallery.hukiewitz.com, and [README.md](../README.md) describes what it does.
+
+- **Done:** every other ticket on the board is closed. That covers the MVP path (#1 → #25 in the diagram above), the first production fixes (the Storage retries in [#59](https://github.com/MHHukiewitz/ai-image-gallery/issues/59), the decode memory fix in [#67](https://github.com/MHHukiewitz/ai-image-gallery/issues/67), the batch bumps and timeouts in [#76](https://github.com/MHHukiewitz/ai-image-gallery/issues/76)), and the optional and improvement tickets: duplicate bumps ([#60](https://github.com/MHHukiewitz/ai-image-gallery/issues/60)), semantic similarity and search ([#63](https://github.com/MHHukiewitz/ai-image-gallery/issues/63), [#75](https://github.com/MHHukiewitz/ai-image-gallery/issues/75)), and the Jev verifier ([#50](https://github.com/MHHukiewitz/ai-image-gallery/issues/50)).
+- **Still open:**
+  - [#77](https://github.com/MHHukiewitz/ai-image-gallery/issues/77): the per-user upload quota, in progress.
+  - [#28](https://github.com/MHHukiewitz/ai-image-gallery/issues/28): the Anthropic key. Until it arrives, production runs Claude Haiku 5.5 through OpenRouter, as [docs/ai-service-choice.md](ai-service-choice.md) describes.
+  - [#30](https://github.com/MHHukiewitz/ai-image-gallery/issues/30): the Sentry project, optional.
+- **Known gaps:**
+  1. The local `docker-compose.yml` passes the whole `.env` to the API container, so the secret key is in its environment. Production passes each service only its own variables.
+  2. `UPLOAD_PROCESSING_CONCURRENCY` isn't passed through `deploy/compose.prod.yml`, so production always uses the default of 2.
+  3. Originals are stored byte for byte, so their EXIF metadata (including any GPS tag) is kept.
+  4. The MSW mocks don't cover the duplicate-bump path.
