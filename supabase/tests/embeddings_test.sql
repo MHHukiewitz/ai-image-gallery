@@ -23,6 +23,13 @@ begin;
 
 select plan(65);
 
+-- These cases check the scoring formula, so some of their matches score at or below the floor that
+-- "Find similar" applies (search_similar_min_score, 20261020000016). Lower it for this transaction,
+-- which rolls back, so every case stays visible. search_test.sql checks the floor itself.
+create or replace function public.search_similar_min_score() returns float8
+language sql immutable parallel safe
+return 0.1;
+
 -- Fixtures (as postgres, which bypasses RLS) ----------------------------------------------------
 
 -- The 384-dimensional vector (x, y, 0, 0, ...). Its length is x² + y², so vec(1, 0) is a unit vector.

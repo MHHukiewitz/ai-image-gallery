@@ -18,6 +18,13 @@ begin;
 
 select plan(39);
 
+-- These cases check the scoring formula, so some of their matches score at or below the floor that
+-- "Find similar" applies (search_similar_min_score, 20261020000016). Lower it for this transaction,
+-- which rolls back, so every case stays visible. search_test.sql checks the floor itself.
+create or replace function public.search_similar_min_score() returns float8
+language sql immutable parallel safe
+return 0.1;
+
 -- Fixtures (as postgres, which bypasses RLS) ----------------------------------------------------
 
 insert into auth.users (id, email)
