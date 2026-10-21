@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     MAX_IMAGE_PIXELS: int = 40_000_000
     # How many uploads are decoded at once. Each holds tens of megabytes while it decodes.
     UPLOAD_PROCESSING_CONCURRENCY: int = Field(default=2, ge=1)
+    # Each new image costs AI credit, so one user may add this many in a rolling 24 h window. 0
+    # turns the quota off. Re-uploading an image the user already has doesn't count.
+    UPLOAD_DAILY_QUOTA: int = Field(default=300, ge=0)
+    # Comma-separated. Matched without regard to letter case. Keep the real addresses in the
+    # server's .env: the repo is public.
+    UPLOAD_QUOTA_EXEMPT_EMAILS: str = ""
 
     # --- AI analysis (worker) ---
     ANALYZER: Literal["fake", "anthropic", "openai_compat"] = "fake"
@@ -99,6 +105,12 @@ class Settings(BaseSettings):
             base_url = self.SUPABASE_URL.rstrip("/")
             self.SUPABASE_JWKS_URL = f"{base_url}/auth/v1/.well-known/jwks.json"
         return self
+
+    @property
+    def upload_quota_exempt_emails(self) -> frozenset[str]:
+        """The exempt addresses, lower-cased and stripped, with blank entries dropped."""
+        entries = (entry.strip().lower() for entry in self.UPLOAD_QUOTA_EXEMPT_EMAILS.split(","))
+        return frozenset(entry for entry in entries if entry)
 
 
 @lru_cache
