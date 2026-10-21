@@ -1,3 +1,4 @@
+import hashlib
 import io
 import logging
 import struct
@@ -30,7 +31,6 @@ from gallery.services.analysis import (
 
 SERVICE_LOGGER = "gallery.services.analysis"
 ANALYZER_ID = "test:model:v1"
-SHA = "a" * 64
 JOB_ID = 42
 IMAGE_ID = 7
 MAX_BYTES = 1024 * 1024
@@ -65,6 +65,12 @@ def bomb_png_bytes(width: int, height: int) -> bytes:
     )
 
 
+# What the worker computes over the image it downloads, which is the cache's key.
+SHA = hashlib.sha256(png_bytes()).hexdigest()
+# A hash that is well-formed but belongs to no file here, like one forged through PostgREST.
+FORGED_SHA = "f" * 64
+
+
 def make_job(*, attempts: int = 1) -> Job:
     return Job(
         id=JOB_ID, kind=ANALYZE_IMAGE, image_id=IMAGE_ID, user_id=UUID(int=1), attempts=attempts
@@ -72,13 +78,15 @@ def make_job(*, attempts: int = 1) -> Job:
 
 
 def make_target(
-    status: AnalysisStatus = AnalysisStatus.PROCESSING, error: str | None = None
+    status: AnalysisStatus = AnalysisStatus.PROCESSING,
+    error: str | None = None,
+    content_sha256: str = SHA,
 ) -> AnalysisTarget:
     """The image as the worker finds it right after its claim, unless told otherwise."""
     return AnalysisTarget(
         image_id=IMAGE_ID,
         original_path="u/i/original.png",
-        content_sha256=SHA,
+        content_sha256=content_sha256,
         status=status,
         error=error,
     )
@@ -303,6 +311,58 @@ async def test_cache_hit_skips_the_analyzer() -> None:
     assert rig.queue.completed[0]["description"] == cached.description
     # Colors are always computed locally, cache hit or not.
     assert rig.queue.completed[0]["colors"] == dominant_colors(png_bytes())
+
+
+async def test_the_cache_is_keyed_by_the_downloaded_bytes_not_the_rows_hash() -> None:
+    rig = make_rig()
+    rig.queue.target = make_target(content_sha256=FORGED_SHA)
+
+    await rig.service.process(make_job())
+
+    assert rig.cache.entries == {(SHA, ANALYZER_ID): ANALYSIS}
+
+
+async def test_the_rows_forged_hash_cannot_read_another_files_cache_entry() -> None:
+    rig = make_rig()
+    rig.queue.target = make_target(content_sha256=FORGED_SHA)
+    someone_elses = Analysis(tags=("other",) * 5, description="A different picture.")
+    rig.cache.entries[(FORGED_SHA, ANALYZER_ID)] = someone_elses
+
+    await rig.service.process(make_job())
+
+    assert len(rig.analyzer.calls) == 1
+    assert rig.queue.completed[0]["description"] == ANALYSIS.description
+    # The entry under the forged hash is left exactly as it was.
+    assert rig.cache.entries[(FORGED_SHA, ANALYZER_ID)] == someone_elses
+
+
+async def test_a_cache_hit_for_the_real_digest_skips_the_analyzer_despite_a_forged_row() -> None:
+    rig = make_rig()
+    rig.queue.target = make_target(content_sha256=FORGED_SHA)
+    cached = Analysis(tags=("cached", "a", "b", "c", "d"), description="From the cache.")
+    rig.cache.entries[(SHA, ANALYZER_ID)] = cached
+
+    await rig.service.process(make_job())
+
+    assert rig.analyzer.calls == []
+    assert rig.queue.completed[0]["description"] == cached.description
+
+
+async def test_a_stripped_original_completes_without_a_warning_and_is_cached_by_its_bytes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # #85: the row keeps the hash of the uploaded file, while the stored original lost its
+    # metadata, so the two differ for most phone photos.
+    uploaded_sha = hashlib.sha256(png_bytes() + b"exif").hexdigest()
+    rig = make_rig()
+    rig.queue.target = make_target(content_sha256=uploaded_sha)
+
+    await rig.service.process(make_job())
+
+    assert len(rig.queue.completed) == 1
+    assert rig.cache.entries == {(SHA, ANALYZER_ID): ANALYSIS}
+    assert worst_level(caplog) == logging.INFO
+    assert job_line(caplog).outcome == "done"
 
 
 async def test_cache_is_keyed_by_analyzer() -> None:

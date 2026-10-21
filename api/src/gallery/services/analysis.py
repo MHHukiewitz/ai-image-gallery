@@ -32,6 +32,7 @@ image is completed first and embedded after. When that fails, the job still ends
 """
 
 import asyncio
+import hashlib
 import logging
 import mimetypes
 import time
@@ -187,7 +188,12 @@ class AnalysisService:
             data = await self._store.get(target.original_path)
             # Decoding and quantizing are CPU work, so keep them off the event loop.
             colors = await asyncio.to_thread(self._inspect_then_colors, data)
-            analysis, cache_hit = await self._analysis_for(target, data)
+            # The cache key is the digest of the bytes just downloaded, never the row's
+            # content_sha256: that is the hash of the file as uploaded, which the API strips of
+            # metadata before storing (#85), so it often differs, and a user can also write it
+            # through PostgREST. A mismatch is expected, so it is not logged.
+            content_sha256 = await asyncio.to_thread(_sha256_hex, data)
+            analysis, cache_hit = await self._analysis_for(target, data, content_sha256)
             tags, verification = await self._verified_tags(target, data, analysis)
             await self._queue.complete_analysis(
                 job.id,
@@ -279,14 +285,22 @@ class AnalysisService:
             message, status = "analysis already ended, job closed", target.status
         self._log_job(logging.INFO, message, job, started, "skipped", False, None, status=status)
 
-    async def _analysis_for(self, target: AnalysisTarget, data: bytes) -> tuple[Analysis, bool]:
-        """Return the analysis and whether it came from the cache."""
+    async def _analysis_for(
+        self, target: AnalysisTarget, data: bytes, content_sha256: str
+    ) -> tuple[Analysis, bool]:
+        """Return the analysis and whether it came from the cache.
+
+        `content_sha256` is the digest of `data`, the bytes this worker downloaded. The cache is
+        shared by all tenants, so it must never be keyed by the row's own `content_sha256`: that
+        is the hash of the uploaded file, not of the stripped original (#85), and a user can write
+        it through PostgREST.
+        """
         analyzer_id = self._analyzer.analyzer_id
-        cached = await self._cache_get(target, analyzer_id)
+        cached = await self._cache_get(target, content_sha256, analyzer_id)
         if cached is not None:
             return cached, True
         analysis = await self._analyzer.analyze(data, _mime_type(target))
-        await self._cache_put(target, analyzer_id, analysis)
+        await self._cache_put(target, content_sha256, analyzer_id, analysis)
         return analysis, False
 
     async def _verified_tags(
@@ -354,9 +368,11 @@ class AnalysisService:
 
     # The cache only saves money, so a cache failure must not fail the job: a failed `put` in
     # particular would throw away a paid analysis and pay for it again on the retry.
-    async def _cache_get(self, target: AnalysisTarget, analyzer_id: str) -> Analysis | None:
+    async def _cache_get(
+        self, target: AnalysisTarget, content_sha256: str, analyzer_id: str
+    ) -> Analysis | None:
         try:
-            return await self._cache.get(target.content_sha256, analyzer_id)
+            return await self._cache.get(content_sha256, analyzer_id)
         except Exception:
             logger.warning(
                 "analysis cache lookup failed, analyzing without it",
@@ -366,10 +382,10 @@ class AnalysisService:
             return None
 
     async def _cache_put(
-        self, target: AnalysisTarget, analyzer_id: str, analysis: Analysis
+        self, target: AnalysisTarget, content_sha256: str, analyzer_id: str, analysis: Analysis
     ) -> None:
         try:
-            await self._cache.put(target.content_sha256, analyzer_id, analysis)
+            await self._cache.put(content_sha256, analyzer_id, analysis)
         except Exception:
             logger.warning(
                 "analysis cache write failed, the result is not cached",
@@ -470,6 +486,10 @@ class AnalysisService:
         if embedding is not None:
             fields.update(embedding.log_fields())
         logger.log(level, message, extra=fields, exc_info=exception)
+
+
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _mime_type(target: AnalysisTarget) -> str:
