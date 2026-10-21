@@ -81,6 +81,8 @@ sequenceDiagram
   participant L as Claude API
   B->>A: POST /api/v1/images (1 file/request, XHR progress, 2 concurrent, 1 on touch devices)
   A->>A: verify JWT · sniff JPEG/PNG · ≤10 MB · ≤40 MP · EXIF-orient · 300×300 WebP · sha256
+  A->>A: strip EXIF/XMP/IPTC from the original (pixels untouched, orientation kept)
+  A->>S: count upload_log rows in the last 24 h (as user) → 429 at the daily quota
   A->>S: upload {uid}/{uuid}/original.ext + thumb.webp (as user)
   A->>S: insert images + image_metadata(status=pending) (as user)
   Note over S: a trigger queues an analyze_image job
@@ -95,7 +97,9 @@ sequenceDiagram
   W->>L: image (≤1024px JPEG) + JSON schema prompt
   L-->>W: {tags[5..10], description}
   W->>S: upsert ai_cache · rpc complete_analysis (metadata done + job done, one transaction)
-  B->>A: GET page every 2s while any visible item is pending
+  S-->>B: Realtime UPDATE on image_metadata (RLS: own rows only)
+  B->>A: refetch the page and the open image
+  Note over B: polling backs the channel up: 15 s while it is live, 2–3 s while it is down
 ```
 
 **Failure handling**
@@ -146,9 +150,9 @@ images(
   filename varchar(255) not null,            -- display only, sanitized
   original_path text not null,               -- {user_id}/{uuid}/original.jpg|png
   thumbnail_path text not null,              -- {user_id}/{uuid}/thumb.webp
-  mime_type text not null, size_bytes int not null,
+  mime_type text not null, size_bytes int not null,  -- the stored original's size, after stripping
   width int not null, height int not null,
-  content_sha256 char(64) not null,
+  content_sha256 char(64) not null,          -- of the uploaded file, which the web client hashes too
   uploaded_at timestamptz not null default now(),
   last_uploaded_at timestamptz not null default now()  -- the sort key; a bump moves it to now
 )
@@ -167,6 +171,11 @@ image_metadata(
 )
 ai_cache(content_sha256 char(64), analyzer_id text, result jsonb not null,
          created_at timestamptz default now(), primary key (content_sha256, analyzer_id))
+upload_log(                                 -- one row per new image, never removed: the quota counts it
+  id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users on delete cascade,
+  uploaded_at timestamptz not null default now()
+)
 jobs(
   id bigint generated always as identity primary key,
   kind text not null,                        -- 'analyze_image' so far
@@ -182,6 +191,7 @@ jobs(
 **Indexes**
 
 - `images(user_id, uploaded_at desc, id desc)`
+- `upload_log(user_id, uploaded_at)`, the quota's count
 - GIN on `search_vector`
 - GIN on `tags`
 - Partial index on `image_metadata(next_attempt_at) where status = 'pending'`, used by the old queue only
@@ -196,7 +206,10 @@ jobs(
 | `images` | `select`, `insert`, `delete` for the owner |
 | `image_metadata` | `select` for the owner. `insert` only with `status = 'pending'` and only for an owned image. **No `update` for users.** The worker updates through the secret key, and users go through `request_reanalysis(image_id)`, which is `security definer` and checks ownership. |
 | `ai_cache` | RLS on, with **no policies**, so only the secret key can access it |
+| `upload_log` | `select` for the owner, and **no writes for anyone**. The `images_log_upload` trigger (`security definer`) adds a row per new image, so deleting an image doesn't give its quota slot back. |
 | `jobs` | RLS on, with **no policies**. `service_role` can only read it directly, and changes it through the queue RPCs. Users queue analysis jobs indirectly, through the upload trigger and `request_reanalysis`. |
+
+**Realtime.** `image_metadata` is in the `supabase_realtime` publication. A subscriber receives only the rows its `select` policy allows, so the browser hears about its own images' analyses and nobody else's.
 
 **Storage.** A private bucket named `images`. The `select`, `insert` and `delete` policies on `storage.objects` require `(storage.foldername(name))[1] = (select auth.uid())::text`.
 

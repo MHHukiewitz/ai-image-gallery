@@ -24,7 +24,7 @@ Each requirement, and where it's implemented. The end-to-end journey in [`e2e/jo
 - [x] **Sign up, sign in and sign out** with email and password. The gallery needs a session. · [`SignUpPage`](web/src/features/auth/SignUpPage.tsx), [`RequireAuth`](web/src/features/auth/RequireAuth.tsx), [`UserMenu`](web/src/features/auth/UserMenu.tsx)
 - [x] **Upload several images at once**, with progress. JPEG or PNG, up to 10 MB each. · [`UploadZone`](web/src/features/upload/UploadZone.tsx), [`uploadQueue`](web/src/features/upload/uploadQueue.ts), [`services/uploads.py`](api/src/gallery/services/uploads.py), [`domain/validation.py`](api/src/gallery/domain/validation.py)
 - [x] **Thumbnail grid** of your own images. · [`ImageGrid`](web/src/features/gallery/ImageGrid.tsx), [`GET /api/v1/images`](api/src/gallery/api/routes/images.py)
-- [x] **Background AI analysis**: 5 to 10 tags and one sentence per image. A worker claims jobs from a Postgres queue. · [`worker.py`](api/src/gallery/worker.py), [`services/analysis.py`](api/src/gallery/services/analysis.py), [`analyzers/anthropic.py`](api/src/gallery/adapters/analyzers/anthropic.py), [`domain/tags.py`](api/src/gallery/domain/tags.py), queue functions in [`20261020000004_queue.sql`](supabase/migrations/20261020000004_queue.sql)
+- [x] **Background AI analysis**: 5 to 10 tags and one sentence per image. A worker claims jobs from a generic jobs table in Postgres. · [`worker.py`](api/src/gallery/worker.py), [`services/analysis.py`](api/src/gallery/services/analysis.py), [`analyzers/anthropic.py`](api/src/gallery/adapters/analyzers/anthropic.py), [`domain/tags.py`](api/src/gallery/domain/tags.py), the queue in [`20261020000014_jobs.sql`](supabase/migrations/20261020000014_jobs.sql)
 - [x] **Up to three dominant colors** per image. Computed locally with Pillow, so they cost no AI tokens. · [`domain/colors.py`](api/src/gallery/domain/colors.py)
 - [x] **Detail view**: the full picture, description, tags, colors, and delete. · [`ImageModal`](web/src/features/image-detail/ImageModal.tsx), [`DeleteImageDialog`](web/src/features/image-detail/DeleteImageDialog.tsx)
 - [x] **Text search** that updates as you type. The query lives in the URL. · [`SearchBar`](web/src/features/search/SearchBar.tsx), [`search_images`](supabase/migrations/20261020000005_search.sql), [`search_images_semantic`](supabase/migrations/20261020000010_semantic_text_search.sql)
@@ -38,7 +38,9 @@ Beyond the brief:
 - [x] **Duplicates move to the top** instead of being stored twice. A batch endpoint handles a whole drop. · [`20261020000009_dedupe_and_bump.sql`](supabase/migrations/20261020000009_dedupe_and_bump.sql), [`20261020000011_bump_images_batch.sql`](supabase/migrations/20261020000011_bump_images_batch.sql), [upload routes](api/src/gallery/api/routes/uploads.py)
 - [x] **Semantic matching** with a small local embedding model: no API key and no extra service. Vectors live in the same Postgres, in pgvector. · [`adapters/embeddings/fastembed.py`](api/src/gallery/adapters/embeddings/fastembed.py), [`20261020000008_image_embeddings.sql`](supabase/migrations/20261020000008_image_embeddings.sql)
 - [x] **Optional tag verifier** (TypeSafe Jev), off by default. · [`adapters/verifiers/jev.py`](api/src/gallery/adapters/verifiers/jev.py), [decision record §3](docs/ai-service-choice.md#optional-second-stage-tag-verification-with-jev-50)
-- [x] **Upload quota**: 300 new images per user in any rolling 24 hours, with exemptions set on the server. Re-uploads don't count, and a refused drop pauses the queue with one message. · [`services/uploads.py`](api/src/gallery/services/uploads.py), [`useUploads`](web/src/features/upload/useUploads.ts)
+- [x] **Upload quota**: 300 new images per user in any rolling 24 hours, with exemptions by user ID set on the server. Re-uploads don't count, deleting an image doesn't give its slot back, and a refused drop pauses the queue with one message. · [`services/uploads.py`](api/src/gallery/services/uploads.py), [`20261020000012_upload_log.sql`](supabase/migrations/20261020000012_upload_log.sql), [`useUploads`](web/src/features/upload/useUploads.ts)
+- [x] **Live analysis updates**: a finished analysis reaches the browser over Supabase Realtime, filtered by RLS to the user's own rows. Polling stays as a slower backstop. · [`useAnalysisUpdates`](web/src/lib/useAnalysisUpdates.ts), [`20261020000013_realtime_analysis.sql`](supabase/migrations/20261020000013_realtime_analysis.sql)
+- [x] **Originals without location data**: GPS, camera tags, XMP and IPTC are stripped from every stored original without re-encoding it. Only the orientation is kept. · [`domain/metadata.py`](api/src/gallery/domain/metadata.py)
 
 ## Architecture at a glance
 
@@ -137,15 +139,15 @@ Migrations ship with the code. Supabase's GitHub integration applies each new fi
 | OpenRouter key (or Anthropic key) | The worker only | It never reaches the browser or the API. Use a spend-limited key. |
 | Server `.env` | `/opt/ai-gallery/.env` on the server, mode 600 | Gitignored. The deploy script never copies it. It refuses to deploy while a `CHANGE_ME` placeholder remains. |
 
-Production passes each container only the variables it needs. The local `docker-compose.yml` is looser: its `env_file: .env` gives the local API container the whole file, secret key included. The API doesn't read the key, but it's visible in that container's environment. This is a known gap, listed in the next steps.
+Each container gets only the variables it needs, in production and in the local `docker-compose.yml` alike, so the secret key exists only in the worker's environment.
 
 **Row-level security, with the user's own token in the API.** The API calls PostgREST and Storage with the caller's JWT, never a service key. RLS is the only authorization layer. Every table's policies are `to authenticated` and check `(select auth.uid()) = user_id`. `image_metadata` has no update policy for users, and the search functions run as `security invoker`. The database tests and the integration tests check that one user can't read, search, find similar to or delete another user's images. The end-to-end journey signs up a second user and checks that it sees none of the first user's data.
 
 **A private bucket.** The `images` bucket is private. Its object policies allow access only under the caller's own folder (`{user_id}/...`). The API hands out signed URLs that expire after an hour (`SIGNED_URL_TTL_SECONDS`).
 
-**Upload hardening.** The API checks the file's bytes (the JPEG or PNG signature), not its extension or its declared type. It caps the size at 10 MB and the image at 40 megapixels. It reads the header before decoding, so an oversized or bomb-like image is refused before its pixels load. It decodes at reduced size, and the display filename is sanitized. Thumbnails and the AI input are re-encoded. The original is stored byte for byte, so its EXIF metadata, including any GPS tag, stays with it. Stripping that is on the next-steps list.
+**Upload hardening.** The API checks the file's bytes (the JPEG or PNG signature), not its extension or its declared type. It caps the size at 10 MB and the image at 40 megapixels. It reads the header before decoding, so an oversized or bomb-like image is refused before its pixels load. It decodes at reduced size, and the display filename is sanitized. Thumbnails and the AI input are re-encoded. The stored original loses its EXIF, XMP, IPTC, comments and any frames appended after the image, GPS position included, without re-encoding its pixels. Only the orientation is kept, so it still displays upright. Originals stored before this change were stripped by a one-off backfill, checked pixel for pixel.
 
-**Email confirmation is off for the demo.** Reviewers can sign up and use the app at once. The cost is that anyone can create an account. The upload quota caps what an account can spend on AI, and the next step is to add SMTP through Resend and turn confirmation back on ([architecture §14](docs/architecture.md#14-decisions-signed-off-2026-10-20)).
+**Email confirmation is off.** Reviewers can sign up and use the app at once. The app has no password reset or other feature that relies on owning the address, so an unconfirmed email grants nothing. Anyone can still create an account, and the upload quota caps what each one can spend on AI. The quota's exemptions match user IDs, not emails, for the same reason.
 
 **Logs and errors.** Logs are JSON, one object per line. Sentry is off unless a DSN is set. When it's on, it uses the EU region and sends no request bodies, no `Authorization` or `Cookie` headers, no default personal data and no session replays.
 
@@ -162,7 +164,7 @@ On 2026-10-20, production showed four problems. Each has a fix and a test.
 
 **Trade-offs we chose**
 
-- **Polling, not realtime.** The grid and the modal poll every 2 to 3 seconds while an image is pending. That's simple and cheap for this demo, at the cost of a few extra requests. Supabase Realtime would remove them.
+- **Realtime with a polling backstop.** A finished analysis arrives over Supabase Realtime. While an image is pending, the grid and the modal still poll every 15 seconds, or every 2 to 3 seconds while the channel is down, so a missed event costs a short delay, never a stuck tile.
 - **One Postgres for everything.** The queue, the search and the vectors share one database, so there is no Redis or vector service to run. The cost is that they share one connection pool, and the Storage incident came from a small pool.
 - **Local embeddings.** Semantic matching runs a 65 MB model in the API and in the worker. Once loaded, the model adds about 165 MiB to the API's memory, which is why the API limit is 768 MB.
 - **No model calls in tests or the demo.** Tests and the local stack run the fake analyzer. The production worker and the benchmark script are the only code that calls a model.
@@ -170,12 +172,8 @@ On 2026-10-20, production showed four problems. Each has a fix and a test.
 
 **Next steps**
 
-- Turn email confirmation back on, with SMTP through Resend.
-- Strip EXIF metadata, or at least GPS tags, from originals.
-- Stop passing the whole `.env` to the local API container, and list its variables as production does.
-- Count deleted images toward the upload quota. The count only sees images that still exist, so deleting some frees their slots.
-- Match quota exemptions on user IDs instead of emails. An email is only proof of ownership once confirmation is back on.
-- Replace polling with a realtime channel.
-- Replace the per-column job state with a generic jobs table, so other background work can reuse the queue.
+- Enforce the upload quota in the database as well. The API enforces it today, but a signed-in client could write its rows through PostgREST and its files through Storage with its own token, and skip the API. A `before insert` trigger on `images` that counts `upload_log` would close that.
+- Drop the old queue's columns and RPCs (`claim_analysis_jobs`, `complete_analysis_job`, `fail_analysis_job`) in a later migration, now that the worker runs on the jobs table.
+- Publish only the columns the browser needs (`image_id`, `user_id`, `ai_processing_status`) to Realtime, if its load ever matters.
 - Recalibrate the semantic thresholds if the embedding model changes ([architecture §8](docs/architecture.md#8-similarity-embeddings-in-postgres-no-vector-db-service)).
 - Revisit the Jev verifier if a cheaper tagger is adopted ([decision record §3](docs/ai-service-choice.md#optional-second-stage-tag-verification-with-jev-50)).

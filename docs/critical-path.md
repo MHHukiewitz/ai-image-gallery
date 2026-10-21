@@ -127,11 +127,16 @@ Each issue states its own model and rationale. This table is the summary.
 Written with the README pass ([#25](https://github.com/MHHukiewitz/ai-image-gallery/issues/25)), on 2026-10-20. The site is live at https://gallery.hukiewitz.com, and [README.md](../README.md) describes what it does.
 
 - **Done:** every other ticket on the board is closed. That covers the MVP path (#1 → #25 in the diagram above), the first production fixes (the Storage retries in [#59](https://github.com/MHHukiewitz/ai-image-gallery/issues/59), the decode memory fix in [#67](https://github.com/MHHukiewitz/ai-image-gallery/issues/67), the batch bumps and timeouts in [#76](https://github.com/MHHukiewitz/ai-image-gallery/issues/76)), and the optional and improvement tickets: duplicate bumps ([#60](https://github.com/MHHukiewitz/ai-image-gallery/issues/60)), the per-user upload quota ([#77](https://github.com/MHHukiewitz/ai-image-gallery/issues/77)), semantic similarity and search ([#63](https://github.com/MHHukiewitz/ai-image-gallery/issues/63), [#75](https://github.com/MHHukiewitz/ai-image-gallery/issues/75)), and the Jev verifier ([#50](https://github.com/MHHukiewitz/ai-image-gallery/issues/50)).
-- **Closed as not planned:** [#28](https://github.com/MHHukiewitz/ai-image-gallery/issues/28), the Anthropic key. It arrives after the deadline, so production stays on Claude Haiku 5.5 through OpenRouter, as [docs/ai-service-choice.md](ai-service-choice.md) describes.
+- **The next-steps wave (2026-10-21):** the README's next steps became five tickets, run by four sessions in parallel with disjoint owned paths. [#84](https://github.com/MHHukiewitz/ai-image-gallery/issues/84) and [#85](https://github.com/MHHukiewitz/ai-image-gallery/issues/85) shared one Opus session because both edit the upload service. The migrations merged in filename order (0012, 0013, 0014), each one checked live in production before its deploy.
+  - [#84](https://github.com/MHHukiewitz/ai-image-gallery/issues/84): the quota counts an append-only `upload_log`, and exemptions match user IDs (Opus).
+  - [#85](https://github.com/MHHukiewitz/ai-image-gallery/issues/85): originals are stored without EXIF, XMP or IPTC, and a backfill stripped the 49 older ones that carried metadata, checked pixel for pixel against a backup (Opus).
+  - [#86](https://github.com/MHHukiewitz/ai-image-gallery/issues/86): the local compose file lists each container's variables (Haiku).
+  - [#87](https://github.com/MHHukiewitz/ai-image-gallery/issues/87): analysis results arrive over Supabase Realtime, with polling as a backstop (Sonnet).
+  - [#89](https://github.com/MHHukiewitz/ai-image-gallery/issues/89): the worker runs on a generic jobs table. Its migration kept the old worker working until the deploy (Opus).
+- **Closed as not planned:** [#28](https://github.com/MHHukiewitz/ai-image-gallery/issues/28), the Anthropic key. It arrives after the deadline, so production stays on Claude Haiku 5.5 through OpenRouter, as [docs/ai-service-choice.md](ai-service-choice.md) describes. Also [#88](https://github.com/MHHukiewitz/ai-image-gallery/issues/88), email confirmation: the app has no password reset or other email-based feature, so an unconfirmed address grants nothing.
 - **Still open:**
   - [#30](https://github.com/MHHukiewitz/ai-image-gallery/issues/30): the Sentry project, optional.
 - **Known gaps:**
-  1. The local `docker-compose.yml` passes the whole `.env` to the API container, so the secret key is in its environment. Production passes each service only its own variables.
-  2. `UPLOAD_PROCESSING_CONCURRENCY` isn't passed through `deploy/compose.prod.yml`, so production always uses the default of 2.
-  3. Originals are stored byte for byte, so their EXIF metadata (including any GPS tag) is kept.
-  4. The MSW mocks don't cover the duplicate-bump path.
+  1. The upload quota is enforced in the API only. A signed-in client could write rows through PostgREST and files through Storage with its own token, and skip it. A database trigger that counts `upload_log` would close that (README, "Next steps").
+  2. The old queue's columns and RPCs are still in the schema, unused, until a later migration drops them.
+  3. The MSW mocks don't cover the duplicate-bump path.
