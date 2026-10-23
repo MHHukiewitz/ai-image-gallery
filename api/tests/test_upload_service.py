@@ -93,6 +93,7 @@ class InMemoryImageRepo:
         self.fail_with: Exception | None = None
         self.existing: dict[str, ImageRecord] = {}
         self.lookups: list[list[str]] = []
+        self.lookup_owners: list[UUID] = []
         self.bumped: list[int] = []
         self.bumped_batches: list[list[int]] = []
         # Set when the image disappears between the lookup and the bump.
@@ -116,8 +117,9 @@ class InMemoryImageRepo:
             raise self.fail_count
         return sum(1 for uploaded in self.uploaded_at if uploaded >= since)
 
-    async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
+    async def find_by_sha256(self, user_id: UUID, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
         self.lookups.append(list(sha256s))
+        self.lookup_owners.append(user_id)
         return {sha: self.existing[sha] for sha in sha256s if sha in self.existing}
 
     async def bump(self, image_id: int) -> ImageRecord | None:
@@ -700,7 +702,7 @@ async def test_a_failed_lookup_stores_nothing(
     store: InMemoryObjectStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def broken(sha256s: Sequence[str]) -> dict[str, ImageRecord]:
+    async def broken(user_id: UUID, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
         raise ConnectionError("database is down")
 
     monkeypatch.setattr(repo, "find_by_sha256", broken)
@@ -810,7 +812,7 @@ async def test_find_duplicates_maps_hashes_to_ids_and_leaves_out_the_rest(
     repo.existing[owned.content_sha256] = owned
     unknown = "f" * 64
 
-    matches = await service.find_duplicates([owned.content_sha256, unknown])
+    matches = await service.find_duplicates(USER_ID, [owned.content_sha256, unknown])
 
     assert matches == {owned.content_sha256: 7}
 
@@ -818,9 +820,19 @@ async def test_find_duplicates_maps_hashes_to_ids_and_leaves_out_the_rest(
 async def test_find_duplicates_asks_the_repo_once_per_distinct_hash(
     service: UploadService, repo: InMemoryImageRepo
 ) -> None:
-    await service.find_duplicates(["a" * 64, "b" * 64, "a" * 64])
+    await service.find_duplicates(USER_ID, ["a" * 64, "b" * 64, "a" * 64])
 
     assert repo.lookups == [["a" * 64, "b" * 64]]
+
+
+async def test_duplicates_are_looked_up_among_the_callers_own_images_only(
+    service: UploadService, repo: InMemoryImageRepo
+) -> None:
+    # The repo also reads galleries shared with the caller, whose images the caller can't bump.
+    await service.find_duplicates(USER_ID, ["a" * 64])
+    await service.upload(USER_ID, "beach.jpg", a_jpeg())
+
+    assert repo.lookup_owners == [USER_ID, USER_ID]
 
 
 @pytest.mark.parametrize(

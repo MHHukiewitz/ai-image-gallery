@@ -664,7 +664,7 @@ def test_threads_can_share_the_cache() -> None:
 class UnreachableImageRepo:
     """An ImageRepo that must not be reached: the upload dies before the insert."""
 
-    async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
+    async def find_by_sha256(self, user_id: UUID, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
         return {}
 
     async def insert(self, image: NewImage) -> ImageRecord:

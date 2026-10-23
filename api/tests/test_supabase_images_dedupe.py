@@ -6,6 +6,7 @@ integration test; these check what the adapter asks PostgREST for and how it rea
 
 from types import SimpleNamespace
 from typing import Any, cast
+from uuid import UUID
 
 import pytest
 
@@ -14,6 +15,7 @@ from gallery.adapters.supabase_images import SupabaseImageRepo
 from gallery.domain.models import AllImages
 
 OWNER_ID = "7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c"
+OWNER = UUID(OWNER_ID)
 
 
 def detail_row(image_id: int, sha256: str, stored_sha256: str | None = None) -> dict[str, Any]:
@@ -101,13 +103,15 @@ def repo_over(client: FakePostgrest) -> SupabaseImageRepo:
 async def test_find_by_sha256_asks_image_details_once_for_both_hashes_newest_first() -> None:
     client = FakePostgrest([detail_row(2, "b" * 64)])
 
-    await repo_over(client).find_by_sha256(["a" * 64, "b" * 64])
+    await repo_over(client).find_by_sha256(OWNER, ["a" * 64, "b" * 64])
 
     assert client.queries == [
         (
             "image_details",
             [
                 ("select", ("*",), {}),
+                # RLS also shows galleries shared with the caller, whose images aren't theirs.
+                ("eq", ("user_id", OWNER_ID), {}),
                 (
                     "or_",
                     (
@@ -128,7 +132,7 @@ async def test_find_by_sha256_asks_image_details_once_for_both_hashes_newest_fir
 async def test_find_by_sha256_maps_each_matching_hash_to_its_record() -> None:
     client = FakePostgrest([detail_row(2, "b" * 64), detail_row(1, "a" * 64)])
 
-    matches = await repo_over(client).find_by_sha256(["a" * 64, "b" * 64, "c" * 64])
+    matches = await repo_over(client).find_by_sha256(OWNER, ["a" * 64, "b" * 64, "c" * 64])
 
     assert {sha: record.id for sha, record in matches.items()} == {"a" * 64: 1, "b" * 64: 2}
     assert matches["a" * 64].content_sha256 == "a" * 64
@@ -138,7 +142,7 @@ async def test_find_by_sha256_keeps_the_newest_of_several_images_with_one_hash()
     # The query is ordered newest upload first, so the first row of a hash is the one to keep.
     client = FakePostgrest([detail_row(9, "a" * 64), detail_row(3, "a" * 64)])
 
-    matches = await repo_over(client).find_by_sha256(["a" * 64])
+    matches = await repo_over(client).find_by_sha256(OWNER, ["a" * 64])
 
     assert [record.id for record in matches.values()] == [9]
 
@@ -150,7 +154,7 @@ async def test_find_by_sha256_matches_the_stored_hash_of_a_file_whose_metadata_w
     # with other metadata strips to "d" too.
     client = FakePostgrest([detail_row(4, "a" * 64, stored_sha256="d" * 64)])
 
-    matches = await repo_over(client).find_by_sha256(["d" * 64])
+    matches = await repo_over(client).find_by_sha256(OWNER, ["d" * 64])
 
     assert {sha: record.id for sha, record in matches.items()} == {"d" * 64: 4}
 
@@ -158,7 +162,7 @@ async def test_find_by_sha256_matches_the_stored_hash_of_a_file_whose_metadata_w
 async def test_find_by_sha256_answers_both_hashes_that_one_image_matches() -> None:
     client = FakePostgrest([detail_row(4, "a" * 64, stored_sha256="d" * 64)])
 
-    matches = await repo_over(client).find_by_sha256(["a" * 64, "d" * 64])
+    matches = await repo_over(client).find_by_sha256(OWNER, ["a" * 64, "d" * 64])
 
     assert {sha: record.id for sha, record in matches.items()} == {"a" * 64: 4, "d" * 64: 4}
 
@@ -169,7 +173,7 @@ async def test_find_by_sha256_still_matches_a_row_without_a_stored_hash_by_conte
     row["stored_sha256"] = None
     client = FakePostgrest([row])
 
-    matches = await repo_over(client).find_by_sha256(["a" * 64])
+    matches = await repo_over(client).find_by_sha256(OWNER, ["a" * 64])
 
     assert {sha: record.id for sha, record in matches.items()} == {"a" * 64: 6}
 
@@ -180,14 +184,14 @@ async def test_find_by_sha256_refuses_anything_but_a_hex_digest_before_asking(ba
     client = FakePostgrest([detail_row(1, "a" * 64)])
 
     with pytest.raises(ValueError):
-        await repo_over(client).find_by_sha256([bad])
+        await repo_over(client).find_by_sha256(OWNER, [bad])
     assert client.queries == []
 
 
 async def test_find_by_sha256_without_hashes_asks_nothing() -> None:
     client = FakePostgrest([detail_row(1, "a" * 64)])
 
-    assert await repo_over(client).find_by_sha256([]) == {}
+    assert await repo_over(client).find_by_sha256(OWNER, []) == {}
     assert client.queries == []
 
 

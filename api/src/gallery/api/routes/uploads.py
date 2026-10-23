@@ -133,12 +133,9 @@ def _file_part_error(value: str | None) -> RequestValidationError:
     return RequestValidationError([error])
 
 
-# These two don't need the user's id, but naming the dependency keeps the 401 from depending on
-# how the repo is built.
 @router.post(
     "/api/v1/images/lookup",
     response_model=LookupResponse,
-    dependencies=[Depends(get_current_user)],
     responses={
         422: {
             "model": ErrorResponse,
@@ -147,12 +144,16 @@ def _file_part_error(value: str | None) -> RequestValidationError:
     },
 )
 async def lookup_images(
-    body: LookupRequest, service: Annotated[UploadService, Depends(get_upload_service)]
+    body: LookupRequest,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    service: Annotated[UploadService, Depends(get_upload_service)],
 ) -> LookupResponse:
     """Say which of these content hashes the caller already has an image for."""
-    return LookupResponse(matches=await service.find_duplicates(body.content_sha256))
+    return LookupResponse(matches=await service.find_duplicates(user.id, body.content_sha256))
 
 
+# These two don't need the user's id, but naming the dependency keeps the 401 from depending on
+# how the repo is built.
 @router.post(
     "/api/v1/images/bump",
     response_model=BumpResponse,

@@ -269,7 +269,7 @@ async def test_the_hash_lookup_is_retried(
         side_effect=[gateway_timeout(), httpx.Response(200, json=[detail_row(3)])]
     )
 
-    matches = await repo.find_by_sha256([SHA])
+    matches = await repo.find_by_sha256(UUID(OWNER_ID), [SHA])
 
     assert matches[SHA].id == 3
     assert route.call_count == 2

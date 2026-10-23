@@ -100,7 +100,7 @@ class InMemoryImageRepo:
         self.order.insert(0, record.id)
         return record
 
-    async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
+    async def find_by_sha256(self, user_id: UUID, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
         return {sha: self.by_hash[sha] for sha in sha256s if sha in self.by_hash}
 
     async def count_uploaded_since(self, since: datetime) -> int:

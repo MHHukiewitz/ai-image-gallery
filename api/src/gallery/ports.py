@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
 from gallery.domain.models import (
     Analysis,
@@ -22,10 +23,13 @@ class ImageRepo(Protocol):
 
     async def get(self, image_id: int) -> ImageRecord | None: ...
 
-    # Maps each given hash to the caller's image whose content_sha256 (the uploaded file) or
+    # Maps each given hash to `user_id`'s image whose content_sha256 (the uploaded file) or
     # stored_sha256 (the stored file, without metadata) equals it. If several images match (older
-    # uploads can), the most recently uploaded one is returned.
-    async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]: ...
+    # uploads can), the most recently uploaded one is returned. Only the user's own images count:
+    # an image in a gallery shared with them is not theirs to bump.
+    async def find_by_sha256(
+        self, user_id: UUID, sha256s: Sequence[str]
+    ) -> dict[str, ImageRecord]: ...
 
     # Moves the image to the top of the caller's gallery. None when it is missing or not theirs.
     async def bump(self, image_id: int) -> ImageRecord | None: ...

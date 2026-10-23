@@ -154,7 +154,7 @@ class UploadService:
 
         # One lookup for both hashes. A file without metadata strips to itself, so it asks once.
         hashes = list(dict.fromkeys([processed.content_sha256, processed.stored_sha256]))
-        matches = await self._repo.find_by_sha256(hashes)
+        matches = await self._repo.find_by_sha256(user_id, hashes)
         existing = matches.get(processed.content_sha256) or matches.get(processed.stored_sha256)
         if existing is not None:
             bumped = await self._repo.bump(existing.id)
@@ -218,12 +218,13 @@ class UploadService:
             for record in records
         ]
 
-    async def find_duplicates(self, sha256s: Sequence[str]) -> dict[str, int]:
-        """Map each hash the caller already has an image for to that image's id.
+    async def find_duplicates(self, user_id: UUID, sha256s: Sequence[str]) -> dict[str, int]:
+        """Map each hash `user_id` already has an image for to that image's id.
 
         Hashes with no match are left out. The web client uses this to bump instead of uploading.
+        Images in galleries shared with the user don't count, since they can't bump those.
         """
-        matches = await self._repo.find_by_sha256(list(dict.fromkeys(sha256s)))
+        matches = await self._repo.find_by_sha256(user_id, list(dict.fromkeys(sha256s)))
         return {sha256: record.id for sha256, record in matches.items()}
 
     async def _check_daily_quota(self, user_id: UUID) -> None:

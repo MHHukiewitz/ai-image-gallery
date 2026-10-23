@@ -205,12 +205,13 @@ class SupabaseImageRepo:
         return _row_to_record(response.data[0]) if response.data else None
 
     @_retry_idempotent("find_by_sha256")
-    async def find_by_sha256(self, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
-        """Find the caller's images by either hash, in one query.
+    async def find_by_sha256(self, user_id: UUID, sha256s: Sequence[str]) -> dict[str, ImageRecord]:
+        """Find `user_id`'s images by either hash, in one query.
 
         A hash matches an image whose `content_sha256` (the file as uploaded) or `stored_sha256`
-        (the file as stored, without metadata) equals it. RLS limits the view to the caller's
-        rows, so another user's copy of the same file is not a match. Rows come back newest upload
+        (the file as stored, without metadata) equals it. RLS limits the view to rows the caller
+        may read, which include galleries shared with them, so the query also names the owner:
+        another user's copy of the same file is never a match. Rows come back newest upload
         first, and the first row per hash is kept.
         """
         if not sha256s:
@@ -224,6 +225,7 @@ class SupabaseImageRepo:
         response = (
             await self._client.table(_DETAILS)
             .select("*")
+            .eq("user_id", str(user_id))
             .or_(f"content_sha256.in.({listed}),stored_sha256.in.({listed})")
             .order("last_uploaded_at", desc=True)
             .order("id", desc=True)
