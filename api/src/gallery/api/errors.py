@@ -18,6 +18,7 @@ from gallery.api.schemas import ErrorDetail, ErrorResponse
 from gallery.domain.errors import (
     AnalyzerError,
     AuthError,
+    ForbiddenError,
     InvalidImageError,
     NotFoundError,
     QuotaExceededError,
@@ -72,6 +73,10 @@ async def _handle_share_refused(request: Request, exc: ShareRefusedError) -> JSO
     return _error_response(_SHARE_REFUSAL_STATUS[exc.code], exc.code, exc.message)
 
 
+async def _handle_forbidden(request: Request, exc: ForbiddenError) -> JSONResponse:
+    return _error_response(403, "forbidden", str(exc) or "You may not do this.")
+
+
 async def _handle_auth(request: Request, exc: AuthError) -> JSONResponse:
     return _error_response(
         401,
@@ -118,6 +123,7 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(InvalidImageError, _handle_invalid_image)
     app.add_exception_handler(QuotaExceededError, _handle_quota_exceeded)
     app.add_exception_handler(ShareRefusedError, _handle_share_refused)
+    app.add_exception_handler(ForbiddenError, _handle_forbidden)
     app.add_exception_handler(AuthError, _handle_auth)
     app.add_exception_handler(AnalyzerError, _handle_analyzer)
     app.add_exception_handler(NotImplementedError, _handle_not_implemented)

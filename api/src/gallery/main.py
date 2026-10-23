@@ -8,7 +8,7 @@ from PIL import Image
 
 from gallery.api.body_limit import BodyLimitMiddleware
 from gallery.api.errors import register_error_handlers
-from gallery.api.routes import health, images, shares, uploads
+from gallery.api.routes import health, images, shares, site_settings, uploads
 from gallery.api.schemas import ErrorResponse
 from gallery.config import get_settings
 from gallery.observability import init_observability
@@ -38,6 +38,7 @@ def create_app() -> FastAPI:
     uploads.document_upload_form(app)
     app.include_router(images.router)
     app.include_router(shares.router)
+    app.include_router(site_settings.router)
     register_error_handlers(app)
     app.add_middleware(BodyLimitMiddleware)
     return app

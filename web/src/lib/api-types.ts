@@ -223,10 +223,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/signups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Signup Status
+         * @description Whether new accounts can be created. Needs no sign-in: the sign-up page asks first.
+         */
+        get: operations["get_signup_status_api_v1_signups_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Account
+         * @description What the caller's account may do. The web shows the admin settings only to an admin.
+         */
+        get: operations["get_account_api_v1_account_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Site Settings
+         * @description The site-wide settings. Admins only.
+         */
+        get: operations["get_site_settings_api_v1_admin_settings_get"];
+        /**
+         * Update Site Settings
+         * @description Open or close sign-ups. Admins only. Existing users can sign in either way.
+         */
+        put: operations["update_site_settings_api_v1_admin_settings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AccountOut */
+        AccountOut: {
+            /**
+             * Is Admin
+             * @description Whether the caller may open the admin settings.
+             */
+            is_admin: boolean;
+        };
         /** AnalysisOut */
         AnalysisOut: {
             status: components["schemas"]["AnalysisStatus"];
@@ -378,6 +450,36 @@ export interface components {
          * @enum {string}
          */
         ShareStatus: "pending" | "accepted";
+        /** SignupStatus */
+        SignupStatus: {
+            /**
+             * Allow Signups
+             * @description Whether new accounts can be created right now.
+             */
+            allow_signups: boolean;
+        };
+        /** SiteSettingsOut */
+        SiteSettingsOut: {
+            /**
+             * Allow Signups
+             * @description Whether new accounts can be created.
+             */
+            allow_signups: boolean;
+            /**
+             * Updated At
+             * Format: date-time
+             * @description When an admin last changed a setting.
+             */
+            updated_at: string;
+        };
+        /** SiteSettingsUpdate */
+        SiteSettingsUpdate: {
+            /**
+             * Allow Signups
+             * @description Open (true) or close (false) sign-ups.
+             */
+            allow_signups: boolean;
+        };
     };
     responses: never;
     parameters: never;
@@ -882,6 +984,144 @@ export interface operations {
             };
             /** @description No share with this id that the caller made or received. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Invalid request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_signup_status_api_v1_signups_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignupStatus"];
+                };
+            };
+            /** @description Invalid request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_account_api_v1_account_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOut"];
+                };
+            };
+            /** @description Invalid request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_site_settings_api_v1_admin_settings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteSettingsOut"];
+                };
+            };
+            /** @description The caller is not an admin. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Invalid request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_site_settings_api_v1_admin_settings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SiteSettingsUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteSettingsOut"];
+                };
+            };
+            /** @description The caller is not an admin. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

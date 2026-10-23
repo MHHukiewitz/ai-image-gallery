@@ -16,7 +16,14 @@ from gallery.config import Settings
 
 # AsyncClient is re-exported so api/deps.py can type the per-request client without importing
 # the SDK itself.
-__all__ = ["AsyncClient", "close_client", "database_is_reachable", "service_client", "user_client"]
+__all__ = [
+    "AsyncClient",
+    "anon_client",
+    "close_client",
+    "database_is_reachable",
+    "service_client",
+    "user_client",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +107,19 @@ async def user_client(settings: Settings, access_token: str) -> AsyncClient:
         settings,
         settings.SUPABASE_PUBLISHABLE_KEY,
         authorization=f"Bearer {access_token}",
+        database_timeout=_database_timeout(settings),
+    )
+
+
+async def anon_client(settings: Settings) -> AsyncClient:
+    """Return a client that calls PostgREST as `anon`: the publishable key and no user.
+
+    `anon` has no grants on our tables, so this can only call the few functions granted to it,
+    such as `signups_allowed`. Call `close_client` when the request is done.
+    """
+    return await _create_client(
+        settings,
+        settings.SUPABASE_PUBLISHABLE_KEY,
         database_timeout=_database_timeout(settings),
     )
 
