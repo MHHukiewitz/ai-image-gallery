@@ -254,3 +254,55 @@ describe("MockStore analysis timeline", () => {
     expect(second).toEqual(first);
   });
 });
+
+describe("shares", () => {
+  type ShareList = components["schemas"]["ShareList"];
+
+  async function shareWith(email: string): Promise<Response> {
+    return fetch(`${BASE}/api/v1/shares`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+  }
+
+  async function listShares(): Promise<ShareList> {
+    return (await (await fetch(`${BASE}/api/v1/shares`)).json()) as ShareList;
+  }
+
+  it("starts with one request from another user, which can be accepted", async () => {
+    useFreshStore();
+    const [request] = (await listShares()).incoming;
+
+    const accepted = await fetch(`${BASE}/api/v1/shares/${request.id}/accept`, { method: "POST" });
+
+    expect(accepted.status).toBe(204);
+    expect((await listShares()).incoming[0].status).toBe("accepted");
+  });
+
+  it("shares, refuses the same address twice, and removes the share", async () => {
+    useFreshStore();
+
+    const created = await shareWith("Friend@Example.com");
+    const again = await shareWith("friend@example.com");
+    const { id } = (await listShares()).outgoing[0];
+    const removed = await fetch(`${BASE}/api/v1/shares/${id}`, { method: "DELETE" });
+
+    expect(created.status).toBe(201);
+    expect(again.status).toBe(409);
+    expect(((await again.json()) as ErrorResponse).error.code).toBe("already_shared");
+    expect(removed.status).toBe(204);
+    expect((await listShares()).outgoing).toEqual([]);
+  });
+
+  it("answers like the API for an unknown account and a missing share", async () => {
+    useFreshStore();
+
+    const unknown = await shareWith("nobody@example.com");
+    const missing = await fetch(`${BASE}/api/v1/shares/99`, { method: "DELETE" });
+
+    expect(unknown.status).toBe(404);
+    expect(((await unknown.json()) as ErrorResponse).error.code).toBe("no_account");
+    expect(missing.status).toBe(404);
+  });
+});

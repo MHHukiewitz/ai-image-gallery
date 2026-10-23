@@ -34,6 +34,8 @@ export function ImageDetails({ image, onDelete }: ImageDetailsProps) {
   const hintId = useId();
   const { status, tags, description, colors, error } = image.analysis;
   const analysisDone = status === "done";
+  // An image from a gallery someone shared with the user is theirs to look at, not to change.
+  const sharedBy = image.shared_by ?? null;
 
   // `replace` reuses the history entry that opened the modal. A push would leave Back reopening
   // the modal over the filtered grid.
@@ -47,9 +49,16 @@ export function ImageDetails({ image, onDelete }: ImageDetailsProps) {
       <div className="space-y-1 pr-10">
         <DialogTitle className="text-lg font-semibold break-all">{image.filename}</DialogTitle>
         <UploadedLine uploadedAt={image.uploaded_at} />
+        {sharedBy && (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            Shared by <span className="break-all text-zinc-700 dark:text-zinc-300">{sharedBy}</span>
+          </p>
+        )}
       </div>
 
-      {status === "failed" && <FailedAnalysis imageId={image.id} message={error} />}
+      {status === "failed" && (
+        <FailedAnalysis imageId={image.id} message={error} canRetry={!sharedBy} />
+      )}
       {isAnalyzing(status) && <Analyzing />}
 
       {description && <p className="text-sm text-zinc-700 dark:text-zinc-300">{description}</p>}
@@ -122,9 +131,11 @@ export function ImageDetails({ image, onDelete }: ImageDetailsProps) {
           >
             Find similar
           </Button>
-          <Button variant="danger-secondary" onClick={onDelete}>
-            Delete
-          </Button>
+          {!sharedBy && (
+            <Button variant="danger-secondary" onClick={onDelete}>
+              Delete
+            </Button>
+          )}
         </div>
         {!analysisDone && (
           <p id={hintId} className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -159,7 +170,14 @@ function Analyzing() {
   );
 }
 
-function FailedAnalysis({ imageId, message }: { imageId: number; message: string | null }) {
+interface FailedAnalysisProps {
+  imageId: number;
+  message: string | null;
+  /** Only the owner may queue an image again. */
+  canRetry: boolean;
+}
+
+function FailedAnalysis({ imageId, message, canRetry }: FailedAnalysisProps) {
   const queryClient = useQueryClient();
   const retry = useMutation({
     mutationFn: () => reanalyzeImage(imageId),
@@ -178,14 +196,16 @@ function FailedAnalysis({ imageId, message }: { imageId: number; message: string
     >
       <p className="font-medium">Analysis failed</p>
       {message && <p>{message}</p>}
-      <Button
-        variant="secondary"
-        size="sm"
-        loading={retry.isPending}
-        onClick={() => retry.mutate()}
-      >
-        Retry analysis
-      </Button>
+      {canRetry && (
+        <Button
+          variant="secondary"
+          size="sm"
+          loading={retry.isPending}
+          onClick={() => retry.mutate()}
+        >
+          Retry analysis
+        </Button>
+      )}
     </div>
   );
 }

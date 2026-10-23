@@ -7,11 +7,12 @@ import { useSession } from "../features/auth/useSession";
 import { UserMenu } from "../features/auth/UserMenu";
 import { ActiveFilterRow } from "../features/search/ActiveFilterRow";
 import { SearchBar } from "../features/search/SearchBar";
+import { ShareGalleryDialog } from "../features/sharing/ShareGalleryDialog";
 import { RealtimeLiveContext } from "../lib/realtimeStatus";
 import { useAnalysisUpdates } from "../lib/useAnalysisUpdates";
 
 /**
- * Header with the app name, search and user menu, around the page in `children`. It also keeps the
+ * Header with the app name, search, sharing and user menu, around the page in `children`. It also keeps the
  * analysis channel open for the signed-in user, and tells the page whether it is live (the grid
  * and the modal poll less while it is).
  */
@@ -62,7 +63,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
           <div className="order-last min-w-0 basis-full sm:order-none sm:flex-1 sm:basis-auto">
             <SearchBar />
           </div>
-          <div className="ml-auto shrink-0 sm:ml-0">
+          <div className="ml-auto flex shrink-0 items-center gap-1 sm:ml-0">
+            <ShareGalleryDialog />
             <UserMenu />
           </div>
         </div>

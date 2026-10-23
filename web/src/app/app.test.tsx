@@ -29,6 +29,10 @@ vi.mock("../features/auth/SignInPage", () => ({ SignInPage: marker("SignInPage")
 vi.mock("../features/auth/SignUpPage", () => ({ SignUpPage: marker("SignUpPage") }));
 vi.mock("../features/auth/UserMenu", () => ({ UserMenu: marker("UserMenu") }));
 vi.mock("../features/search/SearchBar", () => ({ SearchBar: marker("SearchBar") }));
+vi.mock("../features/sharing/ShareGalleryDialog", () => ({
+  ShareGalleryDialog: marker("ShareGalleryDialog"),
+}));
+vi.mock("../features/sharing/ShareRequests", () => ({ ShareRequests: marker("ShareRequests") }));
 vi.mock("../features/upload/UploadZone", () => ({ UploadZone: marker("UploadZone") }));
 // The grid marker also shows what the layout told it about the analysis channel.
 vi.mock("../features/gallery/ImageGrid", async () => {
@@ -76,7 +80,9 @@ describe("routes", () => {
     expect(features()).toEqual([
       "RequireAuth",
       "SearchBar",
+      "ShareGalleryDialog",
       "UserMenu",
+      "ShareRequests",
       "UploadZone",
       "ImageGrid",
       "ImageModal",

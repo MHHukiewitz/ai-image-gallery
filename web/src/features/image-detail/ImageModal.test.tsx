@@ -122,6 +122,26 @@ describe("ImageModal", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows who shared an image from a shared gallery, and offers no way to change it", async () => {
+    vi.mocked(getImage).mockResolvedValue(
+      makeImage(
+        { status: "failed", error: "The model timed out." },
+        { shared_by: "friend@example.test" },
+      ),
+    );
+    renderGallery();
+    const user = userEvent.setup();
+
+    const dialog = await openModal(user);
+
+    expect(within(dialog).getByText("friend@example.test")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(within(dialog).getByText("The model timed out.")).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole("button", { name: "Retry analysis" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("closes on Escape and gives focus back to the card that opened it", async () => {
     const { router, opener } = renderGallery();
     const user = userEvent.setup();

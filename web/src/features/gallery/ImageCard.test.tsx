@@ -38,6 +38,23 @@ describe("ImageCard", () => {
     },
   );
 
+  it("marks an image from a shared gallery and names its owner to screen readers", () => {
+    renderCard(makeImage(1, {}, { shared_by: "friend@example.test" }));
+
+    expect(
+      screen.getByRole("button", { name: "Description of photo 1." }),
+    ).toHaveAccessibleDescription("Shared by friend@example.test");
+  });
+
+  it("doesn't mark the user's own images as shared", () => {
+    renderCard(makeImage(1));
+
+    expect(
+      screen.getByRole("button", { name: "Description of photo 1." }),
+    ).not.toHaveAccessibleDescription();
+    expect(screen.queryByText(/Shared by/)).not.toBeInTheDocument();
+  });
+
   it("shows a small failed badge when the analysis failed", () => {
     renderCard(makeImage(1, { status: "failed", tags: [], description: null, error: "boom" }));
 

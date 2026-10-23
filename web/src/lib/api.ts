@@ -6,6 +6,8 @@ export type ImageOut = components["schemas"]["ImageOut"];
 export type ImagePage = components["schemas"]["ImagePage"];
 export type AnalysisOut = components["schemas"]["AnalysisOut"];
 export type AnalysisStatus = components["schemas"]["AnalysisStatus"];
+export type ShareOut = components["schemas"]["ShareOut"];
+export type ShareList = components["schemas"]["ShareList"];
 
 /** Where the API lives. Same-origin `/api` unless the build says otherwise. */
 export const API_BASE = (import.meta.env.VITE_API_BASE || "/api").replace(/\/+$/, "");
@@ -168,6 +170,34 @@ export function deleteImage(id: number): Promise<void> {
 /** Queues the image for analysis again. The status goes back to `pending`. */
 export function reanalyzeImage(id: number): Promise<void> {
   return apiFetch<void>(`/v1/images/${id}/reanalyze`, { method: "POST" });
+}
+
+/** Whom the user shares their gallery with, and who shares theirs with the user. */
+export function listShares(options: { signal?: AbortSignal } = {}): Promise<ShareList> {
+  return apiFetch<ShareList>("/v1/shares", { signal: options.signal });
+}
+
+/**
+ * Asks the account that uses `email` to accept the user's gallery. Fails with `no_account` (404),
+ * `already_shared` (409) or `own_address` (422); the error's message says so in words.
+ */
+export function shareGallery(email: string): Promise<ShareOut> {
+  const body: components["schemas"]["ShareRequest"] = { email };
+  return apiFetch<ShareOut>("/v1/shares", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Accepts a share made to the user. The owner's images then join the user's gallery. */
+export function acceptShare(id: number): Promise<void> {
+  return apiFetch<void>(`/v1/shares/${id}/accept`, { method: "POST" });
+}
+
+/** Ends a share from either side: revoke one the user made, or decline or leave one they received. */
+export function deleteShare(id: number): Promise<void> {
+  return apiFetch<void>(`/v1/shares/${id}`, { method: "DELETE" });
 }
 
 /** The most hashes one `lookupImages` request may carry. */

@@ -10,4 +10,5 @@ export const queryKeys = {
     list: (query: GalleryQuery) => ["images", "list", query] as const,
     detail: (id: number) => ["images", "detail", id] as const,
   },
+  shares: ["shares"] as const,
 };

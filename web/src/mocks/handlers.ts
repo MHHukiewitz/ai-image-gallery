@@ -6,6 +6,9 @@ import type { SearchMode } from "./data";
 
 type ErrorResponse = components["schemas"]["ErrorResponse"];
 type ImagePage = components["schemas"]["ImagePage"];
+type ShareList = components["schemas"]["ShareList"];
+type ShareOut = components["schemas"]["ShareOut"];
+type ShareRequest = components["schemas"]["ShareRequest"];
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -73,6 +76,59 @@ function parseListRequest(
   return { offset: offset ?? 0, limit: limit ?? DEFAULT_PAGE_SIZE, mode };
 }
 
+/**
+ * Shares for the mock backend. It knows no other accounts, so any address except
+ * `nobody@example.com` counts as one, and a request from another user waits to be answered.
+ */
+class MockShares {
+  private nextId = 2;
+  outgoing: ShareOut[] = [];
+  incoming: ShareOut[] = [
+    {
+      id: 1,
+      email: "alex@example.com",
+      status: "pending",
+      created_at: new Date().toISOString(),
+      accepted_at: null,
+    },
+  ];
+
+  list(): ShareList {
+    return { outgoing: this.outgoing, incoming: this.incoming };
+  }
+
+  /** The new share, or the error code the API would answer with. */
+  create(email: string): ShareOut | "no_account" | "already_shared" {
+    const address = email.trim().toLowerCase();
+    if (address === "nobody@example.com") return "no_account";
+    if (this.outgoing.some((share) => share.email === address)) return "already_shared";
+    const share: ShareOut = {
+      id: this.nextId++,
+      email: address,
+      status: "pending",
+      created_at: new Date().toISOString(),
+      accepted_at: null,
+    };
+    this.outgoing = [share, ...this.outgoing];
+    return share;
+  }
+
+  accept(id: number): boolean {
+    const share = this.incoming.find((candidate) => candidate.id === id);
+    if (!share) return false;
+    share.status = "accepted";
+    share.accepted_at ??= new Date().toISOString();
+    return true;
+  }
+
+  remove(id: number): boolean {
+    const before = this.outgoing.length + this.incoming.length;
+    this.outgoing = this.outgoing.filter((share) => share.id !== id);
+    this.incoming = this.incoming.filter((share) => share.id !== id);
+    return this.outgoing.length + this.incoming.length < before;
+  }
+}
+
 interface HandlerOptions {
   store?: MockStore;
   /** Fake network delay for reads. Uploads take four times as long. Tests pass 0. */
@@ -83,8 +139,9 @@ interface HandlerOptions {
 
 /**
  * MSW handlers for the `/api` contract, typed from `api-types.ts`. They fake the whole backend
- * in memory: 45 seeded images, an upload that analyzes for 3 seconds, and rough versions of the
- * three search modes. Supabase auth is not mocked; it still talks to `supabase start`.
+ * in memory: 45 seeded images, an upload that analyzes for 3 seconds, rough versions of the
+ * three search modes, and gallery shares with one request waiting. Supabase auth is not mocked;
+ * it still talks to `supabase start`.
  */
 export function createHandlers({
   store = new MockStore(),
@@ -92,6 +149,8 @@ export function createHandlers({
   baseUrl = "",
 }: HandlerOptions = {}) {
   const api = (path: string) => `${baseUrl}/api${path}`;
+  const shares = new MockShares();
+  const shareNotFound = () => errorResponse(404, "not_found", "Share not found.");
   return [
     http.get(api("/health"), () => HttpResponse.json({ status: "ok" })),
 
@@ -138,6 +197,43 @@ export function createHandlers({
       return store.reanalyze(Number(params.id))
         ? new HttpResponse(null, { status: 202 })
         : notFound();
+    }),
+
+    http.get(api("/v1/shares"), async () => {
+      await delay(latencyMs);
+      return HttpResponse.json(shares.list());
+    }),
+
+    http.post(api("/v1/shares"), async ({ request }) => {
+      await delay(latencyMs);
+      const { email } = (await request.json()) as ShareRequest;
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) return invalid("email: not an address");
+      const created = shares.create(email);
+      if (created === "no_account") {
+        return errorResponse(404, "no_account", "No account uses this e-mail address.");
+      }
+      if (created === "already_shared") {
+        return errorResponse(
+          409,
+          "already_shared",
+          "Your gallery is already shared with this address.",
+        );
+      }
+      return HttpResponse.json(created, { status: 201 });
+    }),
+
+    http.post(api("/v1/shares/:id/accept"), async ({ params }) => {
+      await delay(latencyMs);
+      return shares.accept(Number(params.id))
+        ? new HttpResponse(null, { status: 204 })
+        : shareNotFound();
+    }),
+
+    http.delete(api("/v1/shares/:id"), async ({ params }) => {
+      await delay(latencyMs);
+      return shares.remove(Number(params.id))
+        ? new HttpResponse(null, { status: 204 })
+        : shareNotFound();
     }),
   ];
 }

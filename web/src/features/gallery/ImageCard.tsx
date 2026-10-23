@@ -37,13 +37,17 @@ export function ImageCard({ image, showMatch = false }: ImageCardProps) {
   // the button, the badge would otherwise become part of the name ("… red tones. 87% match").
   // A plain id: React's useId values contain characters some id lookups don't resolve.
   const matchId = `image-${image.id}-match`;
+  const sharedId = `image-${image.id}-shared`;
+  const describedBy = [matchPercent !== null && matchId, image.shared_by && sharedId]
+    .filter(Boolean)
+    .join(" ");
   const name = description || image.filename;
 
   return (
     <button
       type="button"
       aria-label={name}
-      aria-describedby={matchPercent !== null ? matchId : undefined}
+      aria-describedby={describedBy || undefined}
       onClick={() => open(image.id)}
       style={placeholderColor ? { backgroundColor: placeholderColor } : undefined}
       className={clsx(
@@ -106,6 +110,30 @@ export function ImageCard({ image, showMatch = false }: ImageCardProps) {
             </span>
           ))}
         </span>
+      )}
+
+      {/* Like the match badge below: the owner's address is read through aria-describedby. */}
+      {image.shared_by && (
+        <>
+          <span
+            aria-hidden="true"
+            title={`Shared by ${image.shared_by}`}
+            className="absolute top-2 right-2 flex size-6 items-center justify-center rounded-full bg-zinc-900/75 text-white backdrop-blur-sm"
+          >
+            <svg viewBox="0 0 24 24" fill="none" className="size-3.5">
+              <circle cx="12" cy="8" r="3.5" stroke="currentColor" strokeWidth="2" />
+              <path
+                d="M5 20c0-3.6 3.1-5.5 7-5.5s7 1.9 7 5.5"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </span>
+          <span id={sharedId} className="sr-only">
+            Shared by {image.shared_by}
+          </span>
+        </>
       )}
 
       {/* Last, so it paints over the overlays. Screen readers hear the hidden text through the
