@@ -8,6 +8,9 @@ export type AnalysisOut = components["schemas"]["AnalysisOut"];
 export type AnalysisStatus = components["schemas"]["AnalysisStatus"];
 export type ShareOut = components["schemas"]["ShareOut"];
 export type ShareList = components["schemas"]["ShareList"];
+export type SignupStatus = components["schemas"]["SignupStatus"];
+export type AccountOut = components["schemas"]["AccountOut"];
+export type SiteSettingsOut = components["schemas"]["SiteSettingsOut"];
 
 /** Where the API lives. Same-origin `/api` unless the build says otherwise. */
 export const API_BASE = (import.meta.env.VITE_API_BASE || "/api").replace(/\/+$/, "");
@@ -198,6 +201,32 @@ export function acceptShare(id: number): Promise<void> {
 /** Ends a share from either side: revoke one the user made, or decline or leave one they received. */
 export function deleteShare(id: number): Promise<void> {
   return apiFetch<void>(`/v1/shares/${id}`, { method: "DELETE" });
+}
+
+/** Whether new accounts can be created right now. Needs no sign-in, so the sign-up page can ask. */
+export function getSignupStatus(options: { signal?: AbortSignal } = {}): Promise<SignupStatus> {
+  return apiFetch<SignupStatus>("/v1/signups", { signal: options.signal });
+}
+
+/** What the signed-in user's account may do. The server decides who is an admin. */
+export function getAccount(options: { signal?: AbortSignal } = {}): Promise<AccountOut> {
+  return apiFetch<AccountOut>("/v1/account", { signal: options.signal });
+}
+
+/** The site-wide settings. Fails with `forbidden` (403) for anyone but an admin. */
+export function getSiteSettings(options: { signal?: AbortSignal } = {}): Promise<SiteSettingsOut> {
+  return apiFetch<SiteSettingsOut>("/v1/admin/settings", { signal: options.signal });
+}
+
+/** Opens or closes sign-ups. Fails with `forbidden` (403) for anyone but an admin. */
+export function updateSiteSettings(
+  update: components["schemas"]["SiteSettingsUpdate"],
+): Promise<SiteSettingsOut> {
+  return apiFetch<SiteSettingsOut>("/v1/admin/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  });
 }
 
 /** The most hashes one `lookupImages` request may carry. */

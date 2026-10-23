@@ -11,4 +11,8 @@ export const queryKeys = {
     detail: (id: number) => ["images", "detail", id] as const,
   },
   shares: ["shares"] as const,
+  signups: ["signups"] as const,
+  // Per user, so an account's answer never shows for the next one to sign in on this tab.
+  account: (userId: string) => ["account", userId] as const,
+  siteSettings: ["site-settings"] as const,
 };

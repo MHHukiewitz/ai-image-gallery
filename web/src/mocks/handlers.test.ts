@@ -306,3 +306,30 @@ describe("shares", () => {
     expect(missing.status).toBe(404);
   });
 });
+
+describe("sign-up switch", () => {
+  it("closes sign-ups for everyone and refuses a switch that isn't a boolean", async () => {
+    useFreshStore();
+    const put = (body: unknown) =>
+      fetch(`${BASE}/api/v1/admin/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    expect(await (await fetch(`${BASE}/api/v1/signups`)).json()).toEqual({ allow_signups: true });
+    expect(await (await fetch(`${BASE}/api/v1/account`)).json()).toEqual({ is_admin: true });
+
+    const closed = await put({ allow_signups: false });
+    expect(closed.status).toBe(200);
+    expect(await closed.json()).toMatchObject({ allow_signups: false });
+    expect(await (await fetch(`${BASE}/api/v1/signups`)).json()).toEqual({ allow_signups: false });
+    expect(await (await fetch(`${BASE}/api/v1/admin/settings`)).json()).toMatchObject({
+      allow_signups: false,
+    });
+
+    const invalidSwitch = await put({ allow_signups: "maybe" });
+    expect(invalidSwitch.status).toBe(422);
+    expect(((await invalidSwitch.json()) as ErrorResponse).error.code).toBe("validation_error");
+  });
+});

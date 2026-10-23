@@ -9,6 +9,8 @@ type ImagePage = components["schemas"]["ImagePage"];
 type ShareList = components["schemas"]["ShareList"];
 type ShareOut = components["schemas"]["ShareOut"];
 type ShareRequest = components["schemas"]["ShareRequest"];
+type SiteSettingsOut = components["schemas"]["SiteSettingsOut"];
+type SiteSettingsUpdate = components["schemas"]["SiteSettingsUpdate"];
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 50;
@@ -140,8 +142,9 @@ interface HandlerOptions {
 /**
  * MSW handlers for the `/api` contract, typed from `api-types.ts`. They fake the whole backend
  * in memory: 45 seeded images, an upload that analyzes for 3 seconds, rough versions of the
- * three search modes, and gallery shares with one request waiting. Supabase auth is not mocked;
- * it still talks to `supabase start`.
+ * three search modes, gallery shares with one request waiting, and the sign-up switch, whose
+ * admin is whoever signs in. Supabase auth is not mocked; it still talks to `supabase start`, so
+ * closing sign-ups here only changes what the pages say.
  */
 export function createHandlers({
   store = new MockStore(),
@@ -151,6 +154,10 @@ export function createHandlers({
   const api = (path: string) => `${baseUrl}/api${path}`;
   const shares = new MockShares();
   const shareNotFound = () => errorResponse(404, "not_found", "Share not found.");
+  let siteSettings: SiteSettingsOut = {
+    allow_signups: true,
+    updated_at: new Date().toISOString(),
+  };
   return [
     http.get(api("/health"), () => HttpResponse.json({ status: "ok" })),
 
@@ -234,6 +241,29 @@ export function createHandlers({
       return shares.remove(Number(params.id))
         ? new HttpResponse(null, { status: 204 })
         : shareNotFound();
+    }),
+
+    http.get(api("/v1/signups"), async () => {
+      await delay(latencyMs);
+      return HttpResponse.json({ allow_signups: siteSettings.allow_signups });
+    }),
+
+    http.get(api("/v1/account"), async () => {
+      await delay(latencyMs);
+      return HttpResponse.json({ is_admin: true });
+    }),
+
+    http.get(api("/v1/admin/settings"), async () => {
+      await delay(latencyMs);
+      return HttpResponse.json(siteSettings);
+    }),
+
+    http.put(api("/v1/admin/settings"), async ({ request }) => {
+      await delay(latencyMs);
+      const { allow_signups } = (await request.json()) as Partial<SiteSettingsUpdate>;
+      if (typeof allow_signups !== "boolean") return invalid("allow_signups: not a boolean");
+      siteSettings = { allow_signups, updated_at: new Date().toISOString() };
+      return HttpResponse.json(siteSettings);
     }),
   ];
 }

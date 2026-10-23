@@ -14,9 +14,10 @@ import { useAnalysisUpdates } from "../lib/useAnalysisUpdates";
 /**
  * Header with the app name, search, sharing and user menu, around the page in `children`. It also keeps the
  * analysis channel open for the signed-in user, and tells the page whether it is live (the grid
- * and the modal poll less while it is).
+ * and the modal poll less while it is). `search={false}` leaves the search out, for a page that
+ * isn't the gallery: it would write its query into that page's URL, where nothing reads it.
  */
-export function AppLayout({ children }: { children: ReactNode }) {
+export function AppLayout({ children, search = true }: { children: ReactNode; search?: boolean }) {
   const { user } = useSession();
   const realtimeLive = useAnalysisUpdates(user?.id);
 
@@ -60,17 +61,19 @@ export function AppLayout({ children }: { children: ReactNode }) {
             </svg>
             <span className="sr-only sm:not-sr-only">AI Image Gallery</span>
           </Link>
-          <div className="order-last min-w-0 basis-full sm:order-none sm:flex-1 sm:basis-auto">
-            <SearchBar />
-          </div>
-          <div className="ml-auto flex shrink-0 items-center gap-1 sm:ml-0">
+          {search && (
+            <div className="order-last min-w-0 basis-full sm:order-none sm:flex-1 sm:basis-auto">
+              <SearchBar />
+            </div>
+          )}
+          <div className={clsx("ml-auto flex shrink-0 items-center gap-1", search && "sm:ml-0")}>
             <ShareGalleryDialog />
             <UserMenu />
           </div>
         </div>
       </header>
       <main id="main" className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">
-        <ActiveFilterRow />
+        {search && <ActiveFilterRow />}
         <RealtimeLiveContext value={realtimeLive}>{children}</RealtimeLiveContext>
       </main>
     </div>
