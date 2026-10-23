@@ -22,16 +22,18 @@ from gallery import config
 from gallery.adapters.embeddings import DATABASE_DIMENSIONS, build_embedder
 from gallery.adapters.supabase_client import (
     AsyncClient,
+    anon_client,
     close_client,
     database_is_reachable,
     user_client,
 )
 from gallery.adapters.supabase_images import SupabaseImageRepo
 from gallery.adapters.supabase_shares import SupabaseShareRepo
+from gallery.adapters.supabase_site_settings import SupabaseSiteSettingsRepo
 from gallery.adapters.supabase_storage import SupabaseObjectStore
 from gallery.config import Settings
 from gallery.domain.errors import AuthError
-from gallery.ports import ImageRepo, ObjectStore, ShareRepo, TextEmbedder
+from gallery.ports import ImageRepo, ObjectStore, ShareRepo, SiteSettingsRepo, TextEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -138,12 +140,36 @@ async def get_user_client(
         await close_client(client)
 
 
+async def get_anon_client(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> AsyncIterator[AsyncClient]:
+    """Yield a Supabase client that acts as nobody (`anon`), for the routes that need no sign-in."""
+    client = await anon_client(settings)
+    try:
+        yield client
+    finally:
+        await close_client(client)
+
+
 async def get_image_repo(client: Annotated[AsyncClient, Depends(get_user_client)]) -> ImageRepo:
     return SupabaseImageRepo(client)
 
 
 async def get_share_repo(client: Annotated[AsyncClient, Depends(get_user_client)]) -> ShareRepo:
     return SupabaseShareRepo(client)
+
+
+async def get_site_settings_repo(
+    client: Annotated[AsyncClient, Depends(get_user_client)],
+) -> SiteSettingsRepo:
+    return SupabaseSiteSettingsRepo(client)
+
+
+async def get_public_site_settings_repo(
+    client: Annotated[AsyncClient, Depends(get_anon_client)],
+) -> SiteSettingsRepo:
+    """The settings repo as `anon`. Only `signups_allowed` works through it."""
+    return SupabaseSiteSettingsRepo(client)
 
 
 async def get_object_store(

@@ -14,6 +14,7 @@ from gallery.domain.models import (
     Job,
     NewImage,
     Page,
+    SiteSettings,
     TagVerdict,
 )
 
@@ -68,6 +69,23 @@ class ShareRepo(Protocol):
 
     # Ends a share the caller made or received, whatever its status. False when there is none.
     async def delete(self, share_id: int) -> bool: ...
+
+
+class SiteSettingsRepo(Protocol):
+    """The site-wide settings. Runs as the caller, or as anon for signups_allowed alone.
+
+    The database decides who is an admin, so the API never trusts the browser on that.
+    """
+
+    # Anyone may ask, signed in or not.
+    async def signups_allowed(self) -> bool: ...
+
+    async def caller_is_admin(self) -> bool: ...
+
+    # Both raise ForbiddenError unless the caller is an admin.
+    async def get(self) -> SiteSettings: ...
+
+    async def set_allow_signups(self, allow: bool) -> SiteSettings: ...
 
 
 class ObjectStore(Protocol):

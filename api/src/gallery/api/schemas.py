@@ -5,7 +5,13 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, StringConstraints
 
-from gallery.domain.models import AnalysisStatus, GalleryShare, ImageRecord, ShareStatus
+from gallery.domain.models import (
+    AnalysisStatus,
+    GalleryShare,
+    ImageRecord,
+    ShareStatus,
+    SiteSettings,
+)
 
 
 class AnalysisOut(BaseModel):
@@ -133,6 +139,27 @@ def to_share_out(share: GalleryShare) -> ShareOut:
         created_at=share.created_at,
         accepted_at=share.accepted_at,
     )
+
+
+class SignupStatus(BaseModel):
+    allow_signups: bool = Field(description="Whether new accounts can be created right now.")
+
+
+class AccountOut(BaseModel):
+    is_admin: bool = Field(description="Whether the caller may open the admin settings.")
+
+
+class SiteSettingsOut(BaseModel):
+    allow_signups: bool = Field(description="Whether new accounts can be created.")
+    updated_at: datetime = Field(description="When an admin last changed a setting.")
+
+
+class SiteSettingsUpdate(BaseModel):
+    allow_signups: bool = Field(description="Open (true) or close (false) sign-ups.")
+
+
+def to_site_settings_out(settings: SiteSettings) -> SiteSettingsOut:
+    return SiteSettingsOut(allow_signups=settings.allow_signups, updated_at=settings.updated_at)
 
 
 class ErrorDetail(BaseModel):

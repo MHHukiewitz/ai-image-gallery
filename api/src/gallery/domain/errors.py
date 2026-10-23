@@ -61,5 +61,9 @@ class ShareRefusedError(GalleryError):
         self.message = message
 
 
+class ForbiddenError(GalleryError):
+    """The caller is signed in but may not do this, such as an admin-only change."""
+
+
 class AuthError(GalleryError):
     """The request has no valid Supabase session."""

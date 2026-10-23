@@ -125,6 +125,14 @@ class GalleryShare:
 
 
 @dataclass(frozen=True, slots=True)
+class SiteSettings:
+    """The site-wide settings an admin controls, and when one last changed them."""
+
+    allow_signups: bool
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class Job:
     """One job a worker claimed from the `jobs` queue.
 
