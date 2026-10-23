@@ -71,12 +71,18 @@ select ok(
 );
 select policies_are(
   'public', 'images',
-  array['images: owner can select', 'images: owner can insert', 'images: owner can delete'],
+  array[
+    'images: owner can select', 'images: owner can insert', 'images: owner can delete',
+    'images: recipients of a shared gallery can select'
+  ],
   'images has select, insert and delete policies and no update policy'
 );
 select policies_are(
   'public', 'image_metadata',
-  array['image_metadata: owner can select', 'image_metadata: owner can queue analysis'],
+  array[
+    'image_metadata: owner can select', 'image_metadata: owner can queue analysis',
+    'image_metadata: recipients of a shared gallery can select'
+  ],
   'image_metadata has select and insert policies only'
 );
 select ok(
