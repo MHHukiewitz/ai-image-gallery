@@ -10,14 +10,17 @@ import { PasswordInput } from "./PasswordInput";
 import { friendlyAuthError } from "./authErrors";
 import { postSignInPath } from "./authRedirect";
 import { useSession } from "./useSession";
+import { useSignupStatus } from "./useSignupStatus";
 import { PASSWORD_MIN_LENGTH, validateEmail, validateNewPassword } from "./validation";
 
 /**
  * Creates an account. Email confirmation is off, so the sign-up returns a session and the user
  * goes straight in. If confirmation is ever turned on, there's no session: show "check your inbox".
+ * While an admin has closed sign-ups it says so instead of showing the form.
  */
 export function SignUpPage() {
   const { session } = useSession();
+  const signupStatus = useSignupStatus();
   const location = useLocation();
   const navigate = useNavigate();
   const emailRef = useRef<HTMLInputElement>(null);
@@ -34,6 +37,26 @@ export function SignUpPage() {
 
   const target = postSignInPath(location.state);
   if (session) return <Navigate to={target} replace />;
+
+  // Until the answer comes, or if asking fails, the form shows: Supabase Auth refuses on its own.
+  if (signupStatus.data?.allow_signups === false) {
+    return (
+      <AuthCard title="Sign-ups are closed">
+        <div role="status" className="space-y-4 text-sm text-zinc-600 dark:text-zinc-300">
+          <p>New accounts can't be created right now. If you already have one, you can sign in.</p>
+          <p>
+            <Link
+              to="/sign-in"
+              state={location.state}
+              className="font-medium text-zinc-900 underline dark:text-zinc-100"
+            >
+              Sign in
+            </Link>
+          </p>
+        </div>
+      </AuthCard>
+    );
+  }
 
   if (awaitingConfirmation !== undefined) {
     return (
@@ -77,7 +100,11 @@ export function SignUpPage() {
     setSubmitting(true);
     const { data, error } = await supabase.auth.signUp({ email: trimmedEmail, password });
     if (error) {
+      // Supabase Auth refuses closed sign-ups with a generic database error. Ask again: if sign-ups
+      // were closed since the page loaded, the closed notice replaces the form.
+      const { data: status } = await signupStatus.refetch();
       setSubmitting(false);
+      if (status?.allow_signups === false) return;
       setFormError(friendlyAuthError(error));
       // The button was disabled while we waited, which drops focus. Move it to the message.
       alertRef.current?.focus();

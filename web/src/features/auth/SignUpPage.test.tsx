@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AuthApiError } from "@supabase/supabase-js";
@@ -5,6 +6,7 @@ import type { Session } from "@supabase/supabase-js";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError, getSignupStatus } from "../../lib/api";
 import { SignUpPage } from "./SignUpPage";
 
 const auth = vi.hoisted(() => ({
@@ -14,6 +16,10 @@ const auth = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/supabase", () => ({ supabase: { auth } }));
+vi.mock("../../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/api")>()),
+  getSignupStatus: vi.fn(),
+}));
 
 const session = {
   access_token: "test-token",
@@ -21,21 +27,35 @@ const session = {
 } as unknown as Session;
 
 function renderSignUp(state?: unknown) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={[{ pathname: "/sign-up", state }]}>
-      <Routes>
-        <Route path="/sign-up" element={<SignUpPage />} />
-        <Route path="/sign-in" element={<p>Sign-in route</p>} />
-        <Route path="/" element={<p>Gallery route</p>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[{ pathname: "/sign-up", state }]}>
+        <Routes>
+          <Route path="/sign-up" element={<SignUpPage />} />
+          <Route path="/sign-in" element={<p>Sign-in route</p>} />
+          <Route path="/" element={<p>Gallery route</p>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
+
+async function submitValidForm() {
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText("Email"), "ada@example.com");
+  await user.type(screen.getByLabelText("Password"), "long-enough-pw");
+  await user.click(screen.getByRole("button", { name: "Create account" }));
+}
+
+/** How Supabase Auth answers while sign-ups are closed: the trigger's error, passed through. */
+const closedError = new AuthApiError("Sign-ups are closed.", 500, "P0001");
 
 beforeEach(() => {
   vi.resetAllMocks();
   auth.getSession.mockResolvedValue({ data: { session: null }, error: null });
   auth.onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } });
+  vi.mocked(getSignupStatus).mockResolvedValue({ allow_signups: true });
 });
 
 describe("SignUpPage", () => {
@@ -115,5 +135,43 @@ describe("SignUpPage", () => {
       "An account with this email already exists. Try signing in instead.",
     );
     expect(alert).toHaveFocus();
+  });
+  it("says sign-ups are closed instead of showing the form, and offers sign-in", async () => {
+    vi.mocked(getSignupStatus).mockResolvedValue({ allow_signups: false });
+    renderSignUp({ from: "/?image=7" });
+
+    expect(await screen.findByRole("heading", { name: "Sign-ups are closed" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "New accounts can't be created right now.",
+    );
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/sign-in");
+    expect(screen.queryByRole("button", { name: "Create account" })).not.toBeInTheDocument();
+  });
+
+  it("switches to the closed notice when sign-ups closed after the page loaded", async () => {
+    auth.signUp.mockResolvedValue({ data: { user: null, session: null }, error: closedError });
+    vi.mocked(getSignupStatus)
+      .mockResolvedValueOnce({ allow_signups: true })
+      .mockResolvedValueOnce({ allow_signups: false });
+    renderSignUp();
+
+    await submitValidForm();
+
+    expect(await screen.findByRole("heading", { name: "Sign-ups are closed" })).toBeInTheDocument();
+    expect(getSignupStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("still shows the form when it can't learn whether sign-ups are open", async () => {
+    vi.mocked(getSignupStatus).mockRejectedValue(new ApiError(0, "network_error", "Offline."));
+    auth.signUp.mockResolvedValue({ data: { user: null, session: null }, error: closedError });
+    renderSignUp();
+
+    await submitValidForm();
+
+    // Supabase Auth refused on its own; the page says something went wrong rather than nothing.
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Something went wrong. Please try again.",
+    );
+    expect(screen.getByRole("button", { name: "Create account" })).toBeEnabled();
   });
 });

@@ -5,6 +5,7 @@ import type { Session } from "@supabase/supabase-js";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { getAccount } from "../../lib/api";
 import { UserMenu } from "./UserMenu";
 
 const auth = vi.hoisted(() => ({
@@ -14,6 +15,10 @@ const auth = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/supabase", () => ({ supabase: { auth } }));
+vi.mock("../../lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/api")>()),
+  getAccount: vi.fn(),
+}));
 
 const session = {
   access_token: "test-token",
@@ -27,6 +32,7 @@ function renderMenu(queryClient: QueryClient) {
         <Routes>
           <Route path="/" element={<UserMenu />} />
           <Route path="/sign-in" element={<p>Sign-in route</p>} />
+          <Route path="/admin" element={<p>Admin route</p>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -38,6 +44,7 @@ beforeEach(() => {
   auth.getSession.mockResolvedValue({ data: { session }, error: null });
   auth.onAuthStateChange.mockReturnValue({ data: { subscription: { unsubscribe: vi.fn() } } });
   auth.signOut.mockResolvedValue({ error: null });
+  vi.mocked(getAccount).mockResolvedValue({ is_admin: false });
 });
 
 describe("UserMenu", () => {
@@ -74,5 +81,26 @@ describe("UserMenu", () => {
     renderMenu(new QueryClient());
 
     await waitFor(() => expect(screen.queryByRole("button")).not.toBeInTheDocument());
+  });
+  it("offers the admin settings to an admin", async () => {
+    vi.mocked(getAccount).mockResolvedValue({ is_admin: true });
+    const user = userEvent.setup();
+    renderMenu(new QueryClient());
+
+    await user.click(await screen.findByRole("button", { name: "Account menu" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Admin settings" }));
+
+    expect(await screen.findByText("Admin route")).toBeInTheDocument();
+  });
+
+  it("doesn't offer the admin settings to anyone else", async () => {
+    const user = userEvent.setup();
+    renderMenu(new QueryClient());
+
+    await user.click(await screen.findByRole("button", { name: "Account menu" }));
+
+    expect(await screen.findByRole("menuitem", { name: "Sign out" })).toBeInTheDocument();
+    await waitFor(() => expect(getAccount).toHaveBeenCalled());
+    expect(screen.queryByRole("menuitem", { name: "Admin settings" })).not.toBeInTheDocument();
   });
 });

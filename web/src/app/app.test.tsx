@@ -24,6 +24,7 @@ const { marker } = vi.hoisted(() => ({
       </div>
     ),
 }));
+vi.mock("../features/admin/AdminPage", () => ({ AdminPage: marker("AdminPage") }));
 vi.mock("../features/auth/RequireAuth", () => ({ RequireAuth: marker("RequireAuth") }));
 vi.mock("../features/auth/SignInPage", () => ({ SignInPage: marker("SignInPage") }));
 vi.mock("../features/auth/SignUpPage", () => ({ SignUpPage: marker("SignUpPage") }));
@@ -135,6 +136,13 @@ describe("routes", () => {
   it("renders sign-up on its own route", () => {
     renderAt("/sign-up");
     expect(features()).toEqual(["SignUpPage"]);
+  });
+
+  it("lays out the admin settings behind sign-in, without the gallery's search", () => {
+    renderAt("/admin");
+
+    expect(features()).toEqual(["RequireAuth", "ShareGalleryDialog", "UserMenu", "AdminPage"]);
+    expect(within(screen.getByRole("main")).getByText("AdminPage")).toBeInTheDocument();
   });
 
   it("redirects unknown paths to the gallery", () => {

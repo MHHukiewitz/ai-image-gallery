@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from "react-router";
 import type { RouteObject } from "react-router";
 
+import { AdminPage } from "../features/admin/AdminPage";
 import { RequireAuth } from "../features/auth/RequireAuth";
 import { SignInPage } from "../features/auth/SignInPage";
 import { SignUpPage } from "../features/auth/SignUpPage";
@@ -17,6 +18,17 @@ export const routes: RouteObject[] = [
       <RequireAuth>
         <AppLayout>
           <GalleryRoute />
+        </AppLayout>
+      </RequireAuth>
+    ),
+  },
+  {
+    // Linked from the user menu for admins only. Anyone else who opens it gets the server's 403.
+    path: "/admin",
+    element: (
+      <RequireAuth>
+        <AppLayout search={false}>
+          <AdminPage />
         </AppLayout>
       </RequireAuth>
     ),

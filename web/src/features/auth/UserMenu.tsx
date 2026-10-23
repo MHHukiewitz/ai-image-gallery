@@ -1,16 +1,24 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 
 import { FOCUS_COLOR, FOCUS_RING } from "../../components/ui/focusRing";
 import { Skeleton } from "../../components/ui/Skeleton";
 import { supabase } from "../../lib/supabase";
+import { useIsAdmin } from "./useIsAdmin";
 import { useSession } from "./useSession";
 
-/** An initial in a round button. Its menu shows the signed-in email and a sign-out item. */
+const ITEM_CLASS =
+  "flex cursor-pointer items-center rounded-lg px-3 py-2 text-sm outline-none data-[highlighted]:bg-zinc-100 dark:data-[highlighted]:bg-zinc-800";
+
+/**
+ * An initial in a round button. Its menu shows the signed-in email, a link to the admin settings
+ * for an admin, and a sign-out item.
+ */
 export function UserMenu() {
   const { user, loading } = useSession();
+  const isAdmin = useIsAdmin(user?.id);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -58,10 +66,12 @@ export function UserMenu() {
             </span>
           </DropdownMenu.Label>
           <DropdownMenu.Separator className="my-1 h-px bg-zinc-200 dark:bg-zinc-800" />
-          <DropdownMenu.Item
-            onSelect={() => void signOut()}
-            className="flex cursor-pointer items-center rounded-lg px-3 py-2 text-sm outline-none data-[highlighted]:bg-zinc-100 dark:data-[highlighted]:bg-zinc-800"
-          >
+          {isAdmin && (
+            <DropdownMenu.Item asChild className={ITEM_CLASS}>
+              <Link to="/admin">Admin settings</Link>
+            </DropdownMenu.Item>
+          )}
+          <DropdownMenu.Item onSelect={() => void signOut()} className={ITEM_CLASS}>
             Sign out
           </DropdownMenu.Item>
         </DropdownMenu.Content>
