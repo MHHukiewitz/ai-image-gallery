@@ -149,6 +149,17 @@ A user shares their **whole gallery**, read only, with another account named by 
 4. Nothing else widens. Delete, bump and re-analysis still check `user_id = auth.uid()`, so the web hides those actions on shared images. The duplicate lookup names the caller (`user_id = caller`), because a file in a shared gallery isn't the caller's to bump.
 5. Either side ends a share by deleting it: the owner revokes, the recipient declines or leaves. Deleting either account deletes its shares.
 
+### Closing sign-ups
+
+E-mail confirmation is off (§14), so anyone can create an account in a second. The admin can close sign-ups from the web app; existing users keep signing in.
+
+1. The user menu asks `GET /api/v1/account` whether the caller is an admin, and only then links to `/admin`. That is only for the menu: the server decides, from `public.admins`, and refuses the settings to anyone else with 403.
+2. `/admin` shows the switch "Allow new sign-ups". `PUT /api/v1/admin/settings` calls `set_allow_signups(allow)`, which checks `is_admin()` and records who changed it and when.
+3. The `refuse_closed_signups` trigger (`before insert` on `auth.users`) refuses every new account while the switch is off. Hiding the form would not be enough, because the publishable key is public and anyone can call Supabase Auth's `/signup` with it. Signing in creates no row, so it keeps working.
+4. The sign-up page asks `GET /api/v1/signups`, which needs no sign-in, and shows "Sign-ups are closed" instead of the form. If a sign-up is refused anyway (they closed after the page loaded), it asks again and switches to that notice.
+
+Why a trigger and not Supabase's "before user created" auth hook: the hook must also be switched on in the production dashboard, because `config.toml`'s `[auth]` section applies only locally. If that step were missed, sign-ups would stay open without anyone noticing. The trigger ships with the migration and behaves the same locally and in production. The cost is the answer: Auth turns the trigger's error into a 500 with `{"code": "P0001", "message": "Sign-ups are closed."}` rather than a 403, which is why the page asks first. It also refuses accounts made in the dashboard or by SQL, with no exemption; to add one by hand, open sign-ups for that moment.
+
 ## 5. Data model
 
 The challenge's table and column names are kept. Columns are only added.
@@ -195,6 +206,16 @@ gallery_shares(                              -- one per owner and recipient: the
   created_at timestamptz not null default now(), accepted_at timestamptz,
   unique (owner_id, recipient_id), check (owner_id <> recipient_id)
 )
+admins(                                     -- who may change site settings, by account id, never by address
+  user_id uuid primary key references auth.users on delete cascade,
+  created_at timestamptz not null default now()
+)
+site_settings(                              -- exactly one row
+  id boolean primary key default true check (id),
+  allow_signups boolean not null default true,
+  updated_at timestamptz not null default now(),
+  updated_by uuid references auth.users on delete set null
+)
 jobs(
   id bigint generated always as identity primary key,
   kind text not null,                        -- 'analyze_image' so far
@@ -228,6 +249,7 @@ jobs(
 | `ai_cache` | RLS on, with **no policies**, so only the secret key can access it |
 | `upload_log` | `select` for the owner, and **no writes for anyone**. The `images_log_upload` trigger (`security definer`) adds a row per new image, so deleting an image doesn't give its quota slot back. |
 | `jobs` | RLS on, with **no policies**. `service_role` can only read it directly, and changes it through the queue RPCs. Users queue analysis jobs indirectly, through the upload trigger and `request_reanalysis`. |
+| `admins`, `site_settings` | RLS on, with **no policies** and no grants to `anon` or `authenticated`. Only the `security definer` functions below read or change them. |
 | `gallery_shares` | `select` and `delete` for the owner and the recipient. **No `insert` or `update` for users:** `share_gallery(email)` creates a share (it needs `auth.users`), and `accept_gallery_share(id)` lets only the recipient accept. Both are `security definer` and check `auth.uid()`. |
 
 **Shared galleries.** `images`, `image_metadata` and the images bucket each have a second, permissive `select` policy: the row's owner (for objects, the first folder of the key) is the owner of an accepted share whose recipient is `auth.uid()`. Postgres ORs it with the owner's policy. Insert and delete policies don't change, so a recipient can read a shared gallery but never write to it. Realtime follows the same policy, so a recipient also hears about the analyses of shared images.
@@ -250,6 +272,13 @@ jobs(
 - `accept_gallery_share(share_id)` returns false for a share not made to the caller; accepting twice returns true
 - `list_gallery_shares()` lists both directions with the other account's current address, the only column of `auth.users` it reads
 
+**Admin and the sign-up switch.** An admin is a row in `admins`, keyed by account id. An address alone grants nothing, because with e-mail confirmation off anyone can register or switch to an unverified address. The migration adds the account that uses `mike@hukiewitz.com` when it runs; nothing adds admins later, so add one by hand with `insert into public.admins (user_id) select id from auth.users where email = '…'` (locally too, where that account doesn't exist). Deleting the account removes the row, so a new account with the same address doesn't inherit it. The functions are `security definer`:
+
+- `signups_allowed()`, granted to `anon` and `authenticated`. A missing settings row reads as closed.
+- `is_admin()`, granted to `authenticated`
+- `get_site_settings()` and `set_allow_signups(allow)`, granted to `authenticated`. They raise `PT403` for anyone but an admin, which the API maps to 403 `forbidden`.
+- `refuse_closed_signups()`, the trigger on `auth.users`, raises `P0001` "Sign-ups are closed." (§4, Closing sign-ups)
+
 **Search RPCs.** These are `security invoker`:
 
 - `search_images(q, lim, off)`
@@ -259,7 +288,7 @@ jobs(
 
 ## 6. API contract (v1)
 
-All endpoints except health require `Authorization: Bearer <supabase access token>`. Errors use one shape: `{"error": {"code": "...", "message": "..."}}`.
+All endpoints except health and `GET /api/v1/signups` require `Authorization: Bearer <supabase access token>`. Errors use one shape: `{"error": {"code": "...", "message": "..."}}`.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -276,6 +305,10 @@ All endpoints except health require `Authorization: Bearer <supabase access toke
 | POST | `/api/v1/shares` | Body `{"email": "..."}`. Returns 201 `ShareOut` (pending). 404 `no_account`, 409 `already_shared`, 422 `own_address` or an invalid address. |
 | POST | `/api/v1/shares/{id}/accept` | Returns 204, or 404 for a share not made to the caller. |
 | DELETE | `/api/v1/shares/{id}` | Returns 204. The owner revokes, the recipient declines or leaves. 404 if the caller is on neither side. |
+| GET | `/api/v1/signups` | No sign-in. Returns `{"allow_signups": bool}`. |
+| GET | `/api/v1/account` | Returns `{"is_admin": bool}`. |
+| GET | `/api/v1/admin/settings` | Returns `{"allow_signups": bool, "updated_at": "..."}`. 403 `forbidden` for anyone but an admin. |
+| PUT | `/api/v1/admin/settings` | Body `{"allow_signups": bool}`. Returns the settings as GET does. 403 `forbidden` for anyone but an admin. |
 
 ```ts
 type AnalysisStatus = "pending" | "processing" | "done" | "failed";
@@ -401,10 +434,11 @@ ai-image-gallery/
 │     ├─ config.py              pydantic-settings, one Settings class
 │     ├─ observability.py       JSON logging + Sentry init (the only sentry_sdk import)
 │     ├─ api/                   HTTP only: routes/, deps.py (auth), schemas.py, errors.py
-│     ├─ services/              use cases: uploads.py, analysis.py, gallery.py, sharing.py
+│     ├─ services/              use cases: uploads.py, analysis.py, gallery.py, sharing.py, site_settings.py
 │     ├─ domain/                pure, no I/O: models.py, colors.py, thumbnails.py, validation.py
-│     ├─ ports.py               Protocols: ImageRepo, ShareRepo, ObjectStore, ImageAnalyzer, JobQueue
-│     └─ adapters/              supabase_client.py, supabase_images.py, supabase_shares.py, supabase_storage.py,
+│     ├─ ports.py               Protocols: ImageRepo, ShareRepo, SiteSettingsRepo, ObjectStore, ImageAnalyzer, JobQueue
+│     └─ adapters/              supabase_client.py, supabase_images.py, supabase_shares.py, supabase_site_settings.py,
+│                                supabase_storage.py,
 │                                supabase_jobs.py, supabase_cache.py, analyzers/{anthropic,openai_compat,fake}.py
 │                                embeddings/fastembed.py, verifiers/jev.py, retry.py
 ├─ web/                         React · Vite · TS · Tailwind · TanStack Query
@@ -412,7 +446,7 @@ ai-image-gallery/
 │     ├─ app/                   router, providers, layout
 │     ├─ lib/                   supabase.ts (auth only), api.ts (fetch + XHR upload), api-types.ts (generated),
 │     │                         observability.tsx (Sentry init + error boundary; the only @sentry/react import)
-│     ├─ features/              auth/ gallery/ upload/ search/ image-detail/ sharing/
+│     ├─ features/              auth/ gallery/ upload/ search/ image-detail/ sharing/ admin/
 │     ├─ components/ui/         Button, Input, Skeleton, Dialog, Toast …
 │     └─ mocks/                 MSW handlers from contract fixtures (web dev without backend)
 ├─ supabase/                    config.toml · migrations/ · seed.sql · tests/ (pgTAP)
@@ -501,7 +535,7 @@ The ticket breakdown, dependencies, agent models and the critical-path diagram l
 |---|---|
 | Subdomain | `gallery.hukiewitz.com`, on ops-server (5.75.189.90) behind the existing Traefik |
 | Supabase | Supabase Cloud, free tier, EU (Frankfurt). Local dev uses `supabase start`. |
-| Email confirmation | **Off**, so reviewers can sign up instantly. This is documented in the README. Resend SMTP can be added later. |
+| Email confirmation | **Off**, so reviewers can sign up instantly. This is documented in the README. Resend SMTP can be added later. The admin can close sign-ups altogether from `/admin` (§4, Closing sign-ups). |
 | Repo | `MHHukiewitz/ai-image-gallery`, **public**. The local checkout is `~/Workspace/ai-image-gallery`. |
 | AI provider | Claude Haiku 5.5 through OpenRouter, at OpenRouter's default effort (Mike, 2026-10-20). The Anthropic key (#28) arrives after the deadline, so the native adapter stays unused. Mike picks the model from #6's benchmark of Haiku 5.5, Sonnet 5.5 and Opus 5.5. |
 | Observability | JSON logs and Sentry for errors, using Sentry's EU region (optional, with #30). No Dagster, MLOps platform, Langfuse or PostHog. |
