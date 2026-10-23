@@ -139,6 +139,16 @@ The URL state drives one grid:
 
 Each of these maps to the single list endpoint `GET /api/v1/images` with one of the filters. The service dispatches to an SQL function, and the result comes back as `Page[ImageOut]`. The grid never knows which mode it's in.
 
+### Sharing
+
+A user shares their **whole gallery**, read only, with another account named by its e-mail address. No e-mail is sent: the recipient sees the request on the gallery page the next time they open it, with the sharer's address, and accepts or declines it there.
+
+1. The owner enters an address in the header's Share dialog. `POST /api/v1/shares` calls `share_gallery(email)`, which looks the address up in `auth.users`. Only existing accounts can be asked: e-mail confirmation is off (§14), so a request held for an unregistered address would go to whoever registers it first. Sign-up already tells anyone whether an address has an account, so the 404 `no_account` reveals nothing new.
+2. The recipient's gallery page lists their pending requests (`GET /api/v1/shares`). Accept calls `accept_gallery_share(id)`; Decline deletes the share.
+3. Once accepted, extra `select` policies on `images`, `image_metadata` and `storage.objects` let the recipient read the owner's rows and files. So the owner's images appear in the recipient's grid, and in their text, similar and color searches, through the same RLS and the same SQL functions. The API labels them with `shared_by`, the owner's address, which it reads from the share list only when a page holds an image the caller doesn't own.
+4. Nothing else widens. Delete, bump and re-analysis still check `user_id = auth.uid()`, so the web hides those actions on shared images. The duplicate lookup names the caller (`user_id = caller`), because a file in a shared gallery isn't the caller's to bump.
+5. Either side ends a share by deleting it: the owner revokes, the recipient declines or leaves. Deleting either account deletes its shares.
+
 ## 5. Data model
 
 The challenge's table and column names are kept. Columns are only added.
@@ -177,6 +187,14 @@ upload_log(                                 -- one row per new image, never remo
   user_id uuid not null references auth.users on delete cascade,
   uploaded_at timestamptz not null default now()
 )
+gallery_shares(                              -- one per owner and recipient: the whole gallery, read only
+  id bigint generated always as identity primary key,
+  owner_id uuid not null references auth.users on delete cascade,
+  recipient_id uuid not null references auth.users on delete cascade,
+  status text not null default 'pending' check (status in ('pending','accepted')),
+  created_at timestamptz not null default now(), accepted_at timestamptz,
+  unique (owner_id, recipient_id), check (owner_id <> recipient_id)
+)
 jobs(
   id bigint generated always as identity primary key,
   kind text not null,                        -- 'analyze_image' so far
@@ -199,6 +217,7 @@ jobs(
 - Partial unique index on `jobs(kind, image_id) where status in ('pending','processing')`
 - Partial index on `jobs(created_at, id) where status in ('pending','processing')`, the claim's order
 - `jobs(image_id)`, for the cascade from `images`
+- `gallery_shares(recipient_id, status)`, which the recipients' read policies look up
 
 **RLS policies.** All tables have RLS enabled. Policies are per command and `to authenticated`, using `(select auth.uid()) = user_id` with matching `with check`:
 
@@ -209,6 +228,9 @@ jobs(
 | `ai_cache` | RLS on, with **no policies**, so only the secret key can access it |
 | `upload_log` | `select` for the owner, and **no writes for anyone**. The `images_log_upload` trigger (`security definer`) adds a row per new image, so deleting an image doesn't give its quota slot back. |
 | `jobs` | RLS on, with **no policies**. `service_role` can only read it directly, and changes it through the queue RPCs. Users queue analysis jobs indirectly, through the upload trigger and `request_reanalysis`. |
+| `gallery_shares` | `select` and `delete` for the owner and the recipient. **No `insert` or `update` for users:** `share_gallery(email)` creates a share (it needs `auth.users`), and `accept_gallery_share(id)` lets only the recipient accept. Both are `security definer` and check `auth.uid()`. |
+
+**Shared galleries.** `images`, `image_metadata` and the images bucket each have a second, permissive `select` policy: the row's owner (for objects, the first folder of the key) is the owner of an accepted share whose recipient is `auth.uid()`. Postgres ORs it with the owner's policy. Insert and delete policies don't change, so a recipient can read a shared gallery but never write to it. Realtime follows the same policy, so a recipient also hears about the analyses of shared images.
 
 **Realtime.** `image_metadata` is in the `supabase_realtime` publication. A subscriber receives only the rows its `select` policy allows, so the browser hears about its own images' analyses and nobody else's.
 
@@ -221,6 +243,12 @@ jobs(
 - Generic: `claim_jobs(kinds, n, stale_after_seconds, max_attempts)`, `complete_job(job_id)` and `fail_job(job_id, error, max_attempts, retryable)`
 - `analyze_image`: `analysis_target(job_id)`, `complete_analysis(job_id, ...)` (metadata and job in one transaction) and `fail_analysis(job_id, ...)` (keeps the colors)
 - The old queue's `claim_analysis_jobs(n)`, `complete_analysis_job(...)` and `fail_analysis_job(...)` stay until a later migration drops them
+
+**Sharing RPCs.** These are `security definer`, read `auth.uid()`, and are granted to `authenticated` only:
+
+- `share_gallery(email)` raises `PT404` (no account), `PT409` (already shared) or `PT422` (the caller's own address), which the API maps to the same statuses
+- `accept_gallery_share(share_id)` returns false for a share not made to the caller; accepting twice returns true
+- `list_gallery_shares()` lists both directions with the other account's current address, the only column of `auth.users` it reads
 
 **Search RPCs.** These are `security invoker`:
 
@@ -244,6 +272,10 @@ All endpoints except health require `Authorization: Bearer <supabase access toke
 | POST | `/api/v1/images/{id}/bump` | Moves one of the caller's images to the top. Returns 200 `ImageOut`, or 404. |
 | POST | `/api/v1/images/bump` | Body `{"image_ids": [...]}`, 1 to 50 ids. Returns `{"items": [ImageOut]}`, with one signed-URL call. Ids that aren't the caller's are left out. |
 | POST | `/api/v1/images/lookup` | Body `{"content_sha256": [...]}`, 1 to 50 hashes. Returns the caller's matches as `{"matches": {sha: id}}`. |
+| GET | `/api/v1/shares` | Returns `{"outgoing": [ShareOut], "incoming": [ShareOut]}`, newest first. A pending incoming share is a request to answer. |
+| POST | `/api/v1/shares` | Body `{"email": "..."}`. Returns 201 `ShareOut` (pending). 404 `no_account`, 409 `already_shared`, 422 `own_address` or an invalid address. |
+| POST | `/api/v1/shares/{id}/accept` | Returns 204, or 404 for a share not made to the caller. |
+| DELETE | `/api/v1/shares/{id}` | Returns 204. The owner revokes, the recipient declines or leaves. 404 if the caller is on neither side. |
 
 ```ts
 type AnalysisStatus = "pending" | "processing" | "done" | "failed";
@@ -254,8 +286,11 @@ interface ImageOut {
   analysis: { status: AnalysisStatus; tags: string[]; description: string | null;
               colors: string[]; error: string | null };
   score?: number;                   // search modes only
+  shared_by: string | null;         // the owner's address for an image of a shared gallery
 }
 interface Page<T> { items: T[]; next_offset: number | null }
+interface ShareOut { id: number; email: string;   // the other side's address
+                     status: "pending" | "accepted"; created_at: string; accepted_at: string | null }
 ```
 
 Pydantic models in `api/src/gallery/api/schemas.py` are the source of truth. The TypeScript types are generated from OpenAPI with `openapi-typescript`, so neither side hand-writes them.
@@ -366,10 +401,10 @@ ai-image-gallery/
 │     ├─ config.py              pydantic-settings, one Settings class
 │     ├─ observability.py       JSON logging + Sentry init (the only sentry_sdk import)
 │     ├─ api/                   HTTP only: routes/, deps.py (auth), schemas.py, errors.py
-│     ├─ services/              use cases: uploads.py, analysis.py, gallery.py
+│     ├─ services/              use cases: uploads.py, analysis.py, gallery.py, sharing.py
 │     ├─ domain/                pure, no I/O: models.py, colors.py, thumbnails.py, validation.py
-│     ├─ ports.py               Protocols: ImageRepo, ObjectStore, ImageAnalyzer, JobQueue
-│     └─ adapters/              supabase_client.py, supabase_images.py, supabase_storage.py,
+│     ├─ ports.py               Protocols: ImageRepo, ShareRepo, ObjectStore, ImageAnalyzer, JobQueue
+│     └─ adapters/              supabase_client.py, supabase_images.py, supabase_shares.py, supabase_storage.py,
 │                                supabase_jobs.py, supabase_cache.py, analyzers/{anthropic,openai_compat,fake}.py
 │                                embeddings/fastembed.py, verifiers/jev.py, retry.py
 ├─ web/                         React · Vite · TS · Tailwind · TanStack Query
@@ -377,7 +412,7 @@ ai-image-gallery/
 │     ├─ app/                   router, providers, layout
 │     ├─ lib/                   supabase.ts (auth only), api.ts (fetch + XHR upload), api-types.ts (generated),
 │     │                         observability.tsx (Sentry init + error boundary; the only @sentry/react import)
-│     ├─ features/              auth/ gallery/ upload/ search/ image-detail/
+│     ├─ features/              auth/ gallery/ upload/ search/ image-detail/ sharing/
 │     ├─ components/ui/         Button, Input, Skeleton, Dialog, Toast …
 │     └─ mocks/                 MSW handlers from contract fixtures (web dev without backend)
 ├─ supabase/                    config.toml · migrations/ · seed.sql · tests/ (pgTAP)
