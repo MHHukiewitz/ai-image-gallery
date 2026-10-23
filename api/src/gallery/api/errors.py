@@ -21,12 +21,15 @@ from gallery.domain.errors import (
     InvalidImageError,
     NotFoundError,
     QuotaExceededError,
+    ShareRefusedError,
 )
 
 logger = logging.getLogger(__name__)
 
 # Uploads that fail on size get 413. Every other validation failure is a media type problem.
 _PAYLOAD_TOO_LARGE_CODES = frozenset({"too_large", "too_many_pixels"})
+
+_SHARE_REFUSAL_STATUS = {"no_account": 404, "already_shared": 409, "own_address": 422}
 
 
 def _error_response(
@@ -63,6 +66,10 @@ async def _handle_quota_exceeded(request: Request, exc: QuotaExceededError) -> J
         exc.message,
         headers={"Retry-After": str(exc.retry_after_seconds)},
     )
+
+
+async def _handle_share_refused(request: Request, exc: ShareRefusedError) -> JSONResponse:
+    return _error_response(_SHARE_REFUSAL_STATUS[exc.code], exc.code, exc.message)
 
 
 async def _handle_auth(request: Request, exc: AuthError) -> JSONResponse:
@@ -110,6 +117,7 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(NotFoundError, _handle_not_found)
     app.add_exception_handler(InvalidImageError, _handle_invalid_image)
     app.add_exception_handler(QuotaExceededError, _handle_quota_exceeded)
+    app.add_exception_handler(ShareRefusedError, _handle_share_refused)
     app.add_exception_handler(AuthError, _handle_auth)
     app.add_exception_handler(AnalyzerError, _handle_analyzer)
     app.add_exception_handler(NotImplementedError, _handle_not_implemented)

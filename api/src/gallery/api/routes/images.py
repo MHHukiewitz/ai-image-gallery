@@ -5,11 +5,19 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Response
 from fastapi.exceptions import RequestValidationError
 
-from gallery.api.deps import get_image_repo, get_object_store, get_query_embedder, get_settings
+from gallery.api.deps import (
+    CurrentUser,
+    get_current_user,
+    get_image_repo,
+    get_object_store,
+    get_query_embedder,
+    get_settings,
+    get_share_repo,
+)
 from gallery.api.schemas import ErrorResponse, ImageOut, ImagePage, to_image_out
 from gallery.config import Settings
 from gallery.domain.models import AllImages, ColorQuery, GalleryQuery, SimilarTo, TextQuery
-from gallery.ports import ImageRepo, ObjectStore, TextEmbedder
+from gallery.ports import ImageRepo, ObjectStore, ShareRepo, TextEmbedder
 from gallery.services.gallery import GalleryService
 
 router = APIRouter()
@@ -22,9 +30,16 @@ def get_gallery_service(
     objects: Annotated[ObjectStore, Depends(get_object_store)],
     settings: Annotated[Settings, Depends(get_settings)],
     embedder: Annotated[TextEmbedder | None, Depends(get_query_embedder)],
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    shares: Annotated[ShareRepo, Depends(get_share_repo)],
 ) -> GalleryService:
     return GalleryService(
-        images, objects, signed_url_ttl=settings.SIGNED_URL_TTL_SECONDS, embedder=embedder
+        images,
+        objects,
+        signed_url_ttl=settings.SIGNED_URL_TTL_SECONDS,
+        embedder=embedder,
+        viewer_id=user.id,
+        shares=shares,
     )
 
 
@@ -75,7 +90,10 @@ async def list_images(
     similar_to: int | None = None,
     color: str | None = Query(None, pattern=r"^#[0-9a-fA-F]{6}$"),
 ) -> ImagePage:
-    """List the caller's images, newest first. Search with at most one of q, similar_to, color."""
+    """List the caller's images and those of galleries shared with them, newest first.
+
+    Search with at most one of q, similar_to, color.
+    """
     query = _gallery_query(q, similar_to, color)
     page, thumbnail_urls = await service.list(query, limit=limit, offset=offset)
     return ImagePage(

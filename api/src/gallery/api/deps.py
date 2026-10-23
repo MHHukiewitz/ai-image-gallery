@@ -27,10 +27,11 @@ from gallery.adapters.supabase_client import (
     user_client,
 )
 from gallery.adapters.supabase_images import SupabaseImageRepo
+from gallery.adapters.supabase_shares import SupabaseShareRepo
 from gallery.adapters.supabase_storage import SupabaseObjectStore
 from gallery.config import Settings
 from gallery.domain.errors import AuthError
-from gallery.ports import ImageRepo, ObjectStore, TextEmbedder
+from gallery.ports import ImageRepo, ObjectStore, ShareRepo, TextEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,10 @@ async def get_user_client(
 
 async def get_image_repo(client: Annotated[AsyncClient, Depends(get_user_client)]) -> ImageRepo:
     return SupabaseImageRepo(client)
+
+
+async def get_share_repo(client: Annotated[AsyncClient, Depends(get_user_client)]) -> ShareRepo:
+    return SupabaseShareRepo(client)
 
 
 async def get_object_store(

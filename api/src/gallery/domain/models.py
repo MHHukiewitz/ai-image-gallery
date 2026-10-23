@@ -89,6 +89,39 @@ class ImageRecord:
     colors: tuple[str, ...]
     error: str | None
     score: float | None = None
+    # The owner's e-mail address when the image is in a gallery someone shared with the caller.
+    # None for the caller's own images. The gallery service sets it; the repo never does.
+    shared_by: str | None = None
+
+
+class ShareDirection(StrEnum):
+    # The caller shares their gallery with the other account.
+    OUTGOING = "outgoing"
+    # The other account shares their gallery with the caller.
+    INCOMING = "incoming"
+
+
+class ShareStatus(StrEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+
+
+@dataclass(frozen=True, slots=True)
+class GalleryShare:
+    """One gallery share, seen from the caller's side.
+
+    `other_user_id` and `email` name the account on the other side: the recipient of an outgoing
+    share, the owner of an incoming one. An accepted incoming share is what lets the caller see
+    that owner's images.
+    """
+
+    id: int
+    direction: ShareDirection
+    other_user_id: UUID
+    email: str
+    status: ShareStatus
+    created_at: datetime
+    accepted_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)

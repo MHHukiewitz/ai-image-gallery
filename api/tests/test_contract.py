@@ -98,6 +98,7 @@ def test_to_image_out_exposes_only_the_contract_fields() -> None:
         "original_url",
         "analysis",
         "score",
+        "shared_by",
     }
     assert set(image.analysis.model_dump()) == {
         "status",

@@ -190,6 +190,7 @@ def test_an_upload_answers_201_with_the_image_in_the_api_shape(client: TestClien
         "original_url",
         "analysis",
         "score",
+        "shared_by",
     }
     assert body["id"] == 42
     assert body["filename"] == "beach.jpg"
@@ -200,6 +201,7 @@ def test_an_upload_answers_201_with_the_image_in_the_api_shape(client: TestClien
     assert body["thumbnail_url"].endswith("/thumb.webp?token=abc")
     assert body["original_url"] is None
     assert body["score"] is None
+    assert body["shared_by"] is None
     assert body["analysis"] == {
         "status": "pending",
         "tags": [],

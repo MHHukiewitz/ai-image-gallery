@@ -7,15 +7,17 @@ import asyncio
 import threading
 from collections.abc import Iterator
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 
 from gallery.adapters.embeddings import DATABASE_DIMENSIONS, FakeEmbedder
 from gallery.api import deps
+from gallery.api.deps import CurrentUser
 from gallery.config import Settings
 from gallery.domain.models import Page, TextQuery
-from gallery.ports import ImageRepo, ObjectStore, TextEmbedder
+from gallery.ports import ImageRepo, ObjectStore, ShareRepo, TextEmbedder
 
 
 class BuildSpy:
@@ -150,8 +152,13 @@ def client_for(repo: AsyncMock, embedder: TextEmbedder | None) -> TestClient:
     app = create_app()
     store = AsyncMock(spec=ObjectStore)
     store.signed_urls.return_value = {}
+    user = CurrentUser(id=UUID(int=1), email="user@example.test", access_token="test-token")
+    app.dependency_overrides[deps.get_current_user] = lambda: user
     app.dependency_overrides[deps.get_image_repo] = lambda: repo
     app.dependency_overrides[deps.get_object_store] = lambda: store
+    shares = AsyncMock(spec=ShareRepo)
+    shares.list.return_value = []
+    app.dependency_overrides[deps.get_share_repo] = lambda: shares
     app.dependency_overrides[deps.get_query_embedder] = lambda: embedder
     return TestClient(app, raise_server_exceptions=False)
 

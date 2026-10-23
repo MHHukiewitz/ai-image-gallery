@@ -9,6 +9,7 @@ from gallery.domain.models import (
     Analysis,
     AnalysisTarget,
     GalleryQuery,
+    GalleryShare,
     ImageRecord,
     Job,
     NewImage,
@@ -50,6 +51,23 @@ class ImageRepo(Protocol):
     # doesn't free quota. Only the number comes back, which is all the daily quota needs. A bump
     # stores no new image, so it doesn't count.
     async def count_uploaded_since(self, since: datetime) -> int: ...
+
+
+class ShareRepo(Protocol):
+    """The caller's gallery shares. Like ImageRepo, it runs as the caller."""
+
+    # Both directions, newest first.
+    async def list(self) -> list[GalleryShare]: ...
+
+    # Asks the account that uses `email` to accept the caller's gallery. Raises ShareRefusedError
+    # when no account uses it, it is the caller's own, or the caller already shares with it.
+    async def create(self, email: str) -> GalleryShare: ...
+
+    # False when there is no such share made to the caller. Accepting twice is not an error.
+    async def accept(self, share_id: int) -> bool: ...
+
+    # Ends a share the caller made or received, whatever its status. False when there is none.
+    async def delete(self, share_id: int) -> bool: ...
 
 
 class ObjectStore(Protocol):

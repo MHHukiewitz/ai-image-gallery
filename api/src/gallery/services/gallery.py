@@ -1,18 +1,28 @@
 """Gallery use cases: list, open, delete and re-analyze the caller's images.
 
 The service depends on the ports only. The adapters run as the caller, so a missing image and
-another user's image look the same here, and both raise NotFoundError.
+another user's image look the same here, and both raise NotFoundError. The caller's gallery also
+holds the images of every gallery shared with them, which the service labels with their owner.
 """
 
 import asyncio
 import logging
 from collections.abc import Sequence
 from dataclasses import replace
+from uuid import UUID
 
 from gallery.domain.embedding_text import embedding_text
 from gallery.domain.errors import NotFoundError
-from gallery.domain.models import GalleryQuery, ImageRecord, Page, SimilarTo, TextQuery
-from gallery.ports import ImageRepo, ObjectStore, TextEmbedder
+from gallery.domain.models import (
+    GalleryQuery,
+    ImageRecord,
+    Page,
+    ShareDirection,
+    ShareStatus,
+    SimilarTo,
+    TextQuery,
+)
+from gallery.ports import ImageRepo, ObjectStore, ShareRepo, TextEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +39,20 @@ class GalleryService:
         *,
         signed_url_ttl: int,
         embedder: TextEmbedder | None = None,
+        viewer_id: UUID | None = None,
+        shares: ShareRepo | None = None,
     ) -> None:
-        """`embedder` makes text search find images by meaning too. None searches words only."""
+        """`embedder` makes text search find images by meaning too. None searches words only.
+
+        `viewer_id` (the caller) and `shares` together label the images of shared galleries with
+        their owner's address. Without them, every image is taken to be the caller's own.
+        """
         self._repo = repo
         self._store = store
         self._signed_url_ttl = signed_url_ttl
         self._embedder = embedder
+        self._viewer_id = viewer_id
+        self._shares = shares
 
     async def list(
         self, query: GalleryQuery, *, limit: int, offset: int
@@ -52,14 +70,42 @@ class GalleryService:
 
         A text search is embedded first when there is an embedder, so it also finds images by
         meaning. If that fails, the search runs on words alone.
+
+        Images from shared galleries come back with `shared_by` set to their owner's address.
         """
         if isinstance(query, SimilarTo) and await self._repo.get(query.image_id) is None:
             raise NotFoundError("Image not found.")
         if isinstance(query, TextQuery):
             query = await self._with_embedding(query)
         page = await self._repo.list(query, limit=limit, offset=offset)
+        page = replace(page, items=list(await self._label_shared(page.items)))
         thumbnail_urls = await self._sign([image.thumbnail_path for image in page.items])
         return page, thumbnail_urls
+
+    async def _label_shared(self, records: Sequence[ImageRecord]) -> Sequence[ImageRecord]:
+        """Set `shared_by` on the records the caller doesn't own, to their owner's address.
+
+        The shares are read only when the page holds someone else's image, so a page of the
+        caller's own images costs no extra round trip. A record whose owner has no accepted share
+        with the caller any more (it ended between the two reads) is left out: the caller can't
+        see it now.
+        """
+        if self._viewer_id is None or self._shares is None:
+            return records
+        if all(record.user_id == self._viewer_id for record in records):
+            return records
+        owners = {
+            share.other_user_id: share.email
+            for share in await self._shares.list()
+            if share.direction is ShareDirection.INCOMING and share.status is ShareStatus.ACCEPTED
+        }
+        labeled: list[ImageRecord] = []
+        for record in records:
+            if record.user_id == self._viewer_id:
+                labeled.append(record)
+            elif record.user_id in owners:
+                labeled.append(replace(record, shared_by=owners[record.user_id]))
+        return labeled
 
     async def _with_embedding(self, query: TextQuery) -> TextQuery:
         """Attach the query's embedding, or return the query as it is when there is none.
@@ -93,8 +139,10 @@ class GalleryService:
         details shouldn't be hidden by it.
         """
         record = await self._repo.get(image_id)
-        if record is None:
+        labeled = await self._label_shared([record]) if record is not None else []
+        if not labeled:
             raise NotFoundError("Image not found.")
+        record = labeled[0]
         urls = await self._sign([record.thumbnail_path, record.original_path])
         return record, urls.get(record.thumbnail_path, ""), urls.get(record.original_path, "")
 

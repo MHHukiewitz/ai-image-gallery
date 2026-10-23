@@ -5,7 +5,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, StringConstraints
 
-from gallery.domain.models import AnalysisStatus, ImageRecord
+from gallery.domain.models import AnalysisStatus, GalleryShare, ImageRecord, ShareStatus
 
 
 class AnalysisOut(BaseModel):
@@ -29,6 +29,13 @@ class ImageOut(BaseModel):
     analysis: AnalysisOut
     # Only the search modes set this.
     score: float | None = None
+    shared_by: str | None = Field(
+        default=None,
+        description=(
+            "The owner's e-mail address when the image is in a gallery shared with the caller. "
+            "Null for the caller's own images. A shared image is read-only for the caller."
+        ),
+    )
 
 
 class ImagePage(BaseModel):
@@ -83,6 +90,51 @@ class BumpResponse(BaseModel):
     )
 
 
+# Something@something.something, without spaces. Whether an account uses it is the database's
+# call; this only keeps obvious typos from a round trip. 254 is the longest address SMTP allows.
+EmailAddress = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$"),
+]
+
+
+class ShareRequest(BaseModel):
+    email: EmailAddress = Field(description="The address of the account to share the gallery with.")
+
+
+class ShareOut(BaseModel):
+    id: int
+    email: str = Field(
+        description=(
+            "The other account's address: the recipient of an outgoing share, the owner of an "
+            "incoming one."
+        )
+    )
+    status: ShareStatus
+    created_at: datetime
+    accepted_at: datetime | None
+
+
+class ShareList(BaseModel):
+    outgoing: list[ShareOut] = Field(description="Whom the caller shares their gallery with.")
+    incoming: list[ShareOut] = Field(
+        description=(
+            "Who shares their gallery with the caller. A pending one is a request to accept."
+        )
+    )
+
+
+def to_share_out(share: GalleryShare) -> ShareOut:
+    """Map a domain share to the API shape. The other account's id stays inside the API."""
+    return ShareOut(
+        id=share.id,
+        email=share.email,
+        status=share.status,
+        created_at=share.created_at,
+        accepted_at=share.accepted_at,
+    )
+
+
 class ErrorDetail(BaseModel):
     code: str
     message: str
@@ -115,4 +167,5 @@ def to_image_out(
             error=record.error,
         ),
         score=record.score,
+        shared_by=record.shared_by,
     )

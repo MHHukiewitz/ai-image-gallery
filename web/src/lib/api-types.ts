@@ -36,7 +36,9 @@ export interface paths {
         };
         /**
          * List Images
-         * @description List the caller's images, newest first. Search with at most one of q, similar_to, color.
+         * @description List the caller's images and those of galleries shared with them, newest first.
+         *
+         *     Search with at most one of q, similar_to, color.
          */
         get: operations["list_images_api_v1_images_get"];
         put?: never;
@@ -157,6 +159,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Shares
+         * @description List whom the caller shares their gallery with, and who shares theirs with the caller.
+         */
+        get: operations["list_shares_api_v1_shares_get"];
+        put?: never;
+        /**
+         * Create Share
+         * @description Ask another account to accept the caller's gallery. It stays pending until they do.
+         */
+        post: operations["create_share_api_v1_shares_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shares/{share_id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept Share
+         * @description Accept a share made to the caller. The owner's images join the caller's gallery.
+         */
+        post: operations["accept_share_api_v1_shares__share_id__accept_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/shares/{share_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Share
+         * @description End a share: the owner revokes it, or the recipient declines or leaves it.
+         */
+        delete: operations["delete_share_api_v1_shares__share_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -237,6 +303,11 @@ export interface components {
             analysis: components["schemas"]["AnalysisOut"];
             /** Score */
             score?: number | null;
+            /**
+             * Shared By
+             * @description The owner's e-mail address when the image is in a gallery shared with the caller. Null for the caller's own images. A shared image is read-only for the caller.
+             */
+            shared_by?: string | null;
         };
         /** ImagePage */
         ImagePage: {
@@ -263,6 +334,50 @@ export interface components {
                 [key: string]: number;
             };
         };
+        /** ShareList */
+        ShareList: {
+            /**
+             * Outgoing
+             * @description Whom the caller shares their gallery with.
+             */
+            outgoing: components["schemas"]["ShareOut"][];
+            /**
+             * Incoming
+             * @description Who shares their gallery with the caller. A pending one is a request to accept.
+             */
+            incoming: components["schemas"]["ShareOut"][];
+        };
+        /** ShareOut */
+        ShareOut: {
+            /** Id */
+            id: number;
+            /**
+             * Email
+             * @description The other account's address: the recipient of an outgoing share, the owner of an incoming one.
+             */
+            email: string;
+            status: components["schemas"]["ShareStatus"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Accepted At */
+            accepted_at: string | null;
+        };
+        /** ShareRequest */
+        ShareRequest: {
+            /**
+             * Email
+             * @description The address of the account to share the gallery with.
+             */
+            email: string;
+        };
+        /**
+         * ShareStatus
+         * @enum {string}
+         */
+        ShareStatus: "pending" | "accepted";
     };
     responses: never;
     parameters: never;
@@ -610,6 +725,162 @@ export interface operations {
                 content?: never;
             };
             /** @description No image with this id, or its analysis is already running. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Invalid request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_shares_api_v1_shares_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareList"];
+                };
+            };
+            /** @description Invalid request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_share_api_v1_shares_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShareRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareOut"];
+                };
+            };
+            /** @description No account uses this address. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The caller's gallery is already shared with this account. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not an e-mail address, or the caller's own address. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    accept_share_api_v1_shares__share_id__accept_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                share_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No share with this id that the caller made or received. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Invalid request. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_share_api_v1_shares__share_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                share_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No share with this id that the caller made or received. */
             404: {
                 headers: {
                     [name: string]: unknown;

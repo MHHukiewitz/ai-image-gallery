@@ -50,5 +50,16 @@ class QuotaExceededError(GalleryError):
         self.retry_after_seconds = retry_after_seconds
 
 
+class ShareRefusedError(GalleryError):
+    """A gallery share can't be made to that address. `code` says why."""
+
+    def __init__(
+        self, code: Literal["no_account", "already_shared", "own_address"], message: str
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
 class AuthError(GalleryError):
     """The request has no valid Supabase session."""

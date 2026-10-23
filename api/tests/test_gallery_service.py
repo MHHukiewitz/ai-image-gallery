@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -12,13 +13,18 @@ from gallery.domain.models import (
     AllImages,
     AnalysisStatus,
     GalleryQuery,
+    GalleryShare,
     ImageRecord,
     Page,
+    ShareDirection,
+    ShareStatus,
     TextQuery,
 )
 from gallery.services.gallery import GalleryService
 
 OWNER_ID = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
+FRIEND_ID = UUID("0d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a")
+STRANGER_ID = UUID("5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b")
 SIGNED_URL_TTL = 900
 
 
@@ -291,3 +297,114 @@ async def test_reanalyze_raises_not_found_when_the_repo_refuses() -> None:
 
     with pytest.raises(NotFoundError):
         await service.reanalyze(1)
+
+
+# --- shared galleries ----------------------------------------------------------------------
+
+
+def owned_by(user_id: UUID, image_id: int) -> ImageRecord:
+    folder = f"{user_id}/{image_id}"
+    return replace(
+        make_record(image_id),
+        user_id=user_id,
+        original_path=f"{folder}/original.jpg",
+        thumbnail_path=f"{folder}/thumb.webp",
+    )
+
+
+def share_from(
+    user_id: UUID,
+    email: str,
+    direction: ShareDirection = ShareDirection.INCOMING,
+    status: ShareStatus = ShareStatus.ACCEPTED,
+) -> GalleryShare:
+    return GalleryShare(
+        id=len(email),
+        direction=direction,
+        other_user_id=user_id,
+        email=email,
+        status=status,
+        created_at=datetime(2026, 10, 22, 9, 0, tzinfo=UTC),
+        accepted_at=None,
+    )
+
+
+class FakeShareRepo:
+    """Only the listing matters to the gallery. It counts the reads."""
+
+    def __init__(self, *shares: GalleryShare) -> None:
+        self.shares = list(shares)
+        self.reads = 0
+
+    async def list(self) -> list[GalleryShare]:
+        self.reads += 1
+        return self.shares
+
+
+def service_seen_by_owner(repo: FakeImageRepo, shares: FakeShareRepo) -> GalleryService:
+    return GalleryService(
+        repo,
+        store_holding(*repo.records.values()),
+        signed_url_ttl=SIGNED_URL_TTL,
+        viewer_id=OWNER_ID,
+        shares=shares,
+    )
+
+
+async def test_a_page_of_own_images_is_not_labeled_and_reads_no_shares() -> None:
+    shares = FakeShareRepo()
+    service = service_seen_by_owner(FakeImageRepo(make_record(1), make_record(2)), shares)
+
+    page, _ = await service.list(AllImages(), limit=20, offset=0)
+
+    assert [record.shared_by for record in page.items] == [None, None]
+    assert shares.reads == 0
+
+
+async def test_images_of_a_shared_gallery_are_labeled_with_their_owner() -> None:
+    shares = FakeShareRepo(share_from(FRIEND_ID, "friend@example.test"))
+    repo = FakeImageRepo(make_record(1), owned_by(FRIEND_ID, 2), owned_by(FRIEND_ID, 3))
+    service = service_seen_by_owner(repo, shares)
+
+    page, thumbnail_urls = await service.list(AllImages(), limit=20, offset=0)
+
+    assert [(record.id, record.shared_by) for record in page.items] == [
+        (3, "friend@example.test"),
+        (2, "friend@example.test"),
+        (1, None),
+    ]
+    assert shares.reads == 1
+    assert set(thumbnail_urls) == {record.thumbnail_path for record in page.items}
+
+
+async def test_only_accepted_incoming_shares_name_an_owner() -> None:
+    # Neither of these lets the caller see STRANGER_ID's images, so such a row can only come from
+    # a share that ended between the two reads, and it is left out.
+    shares = FakeShareRepo(
+        share_from(STRANGER_ID, "pending@example.test", status=ShareStatus.PENDING),
+        share_from(STRANGER_ID, "outgoing@example.test", direction=ShareDirection.OUTGOING),
+    )
+    service = service_seen_by_owner(FakeImageRepo(make_record(1), owned_by(STRANGER_ID, 2)), shares)
+
+    page, thumbnail_urls = await service.list(AllImages(), limit=20, offset=0)
+
+    assert [record.id for record in page.items] == [1]
+    assert set(thumbnail_urls) == {make_record(1).thumbnail_path}
+
+
+async def test_get_labels_an_image_of_a_shared_gallery() -> None:
+    shares = FakeShareRepo(share_from(FRIEND_ID, "friend@example.test"))
+    service = service_seen_by_owner(FakeImageRepo(owned_by(FRIEND_ID, 2)), shares)
+
+    record, thumbnail_url, original_url = await service.get(2)
+
+    assert record.shared_by == "friend@example.test"
+    assert thumbnail_url == signed(record.thumbnail_path)
+    assert original_url == signed(record.original_path)
+
+
+async def test_get_of_an_image_whose_share_ended_raises_not_found() -> None:
+    service = service_seen_by_owner(FakeImageRepo(owned_by(FRIEND_ID, 2)), FakeShareRepo())
+
+    with pytest.raises(NotFoundError):
+        await service.get(2)

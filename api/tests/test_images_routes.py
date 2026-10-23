@@ -14,18 +14,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from gallery.api import deps
+from gallery.api.deps import CurrentUser
 from gallery.domain.models import (
     AllImages,
     AnalysisStatus,
     ColorQuery,
+    GalleryShare,
     ImageRecord,
     Page,
+    ShareDirection,
+    ShareStatus,
     SimilarTo,
     TextQuery,
 )
-from gallery.ports import ImageRepo, ObjectStore
+from gallery.ports import ImageRepo, ObjectStore, ShareRepo
 
 OWNER_ID = UUID("7b9e2c4a-1d3f-4e5a-8b6c-9d0e1f2a3b4c")
+FRIEND_ID = UUID("0d4c3b2a-1f0e-4d9c-8b7a-6f5e4d3c2b1a")
 NOT_FOUND = {"error": {"code": "not_found", "message": "Image not found."}}
 
 
@@ -73,15 +78,48 @@ def store() -> AsyncMock:
 
 
 @pytest.fixture
-def client(repo: AsyncMock, store: AsyncMock) -> Iterator[TestClient]:
+def shares() -> AsyncMock:
+    mock = AsyncMock(spec=ShareRepo)
+    mock.list.return_value = []
+    return mock
+
+
+@pytest.fixture
+def client(repo: AsyncMock, store: AsyncMock, shares: AsyncMock) -> Iterator[TestClient]:
     # gallery.main builds the app when it is imported, and that reads the settings. Import it
     # here, after conftest's autouse fixture has set them, instead of at module level.
     from gallery.main import create_app
 
     app = create_app()
+    user = CurrentUser(id=OWNER_ID, email="owner@example.test", access_token="test-token")
+    app.dependency_overrides[deps.get_current_user] = lambda: user
     app.dependency_overrides[deps.get_image_repo] = lambda: repo
     app.dependency_overrides[deps.get_object_store] = lambda: store
+    app.dependency_overrides[deps.get_share_repo] = lambda: shares
     yield TestClient(app, raise_server_exceptions=False)
+
+
+def friends_record(image_id: int) -> ImageRecord:
+    """An image of FRIEND_ID's, which the caller sees through a share."""
+    folder = f"{FRIEND_ID}/{image_id}"
+    return replace(
+        make_record(image_id),
+        user_id=FRIEND_ID,
+        original_path=f"{folder}/original.jpg",
+        thumbnail_path=f"{folder}/thumb.webp",
+    )
+
+
+def accepted_share_from_friend() -> GalleryShare:
+    return GalleryShare(
+        id=1,
+        direction=ShareDirection.INCOMING,
+        other_user_id=FRIEND_ID,
+        email="friend@example.test",
+        status=ShareStatus.ACCEPTED,
+        created_at=datetime(2026, 10, 22, 9, 0, tzinfo=UTC),
+        accepted_at=datetime(2026, 10, 22, 9, 5, tzinfo=UTC),
+    )
 
 
 # --- GET /api/v1/images --------------------------------------------------------------------
@@ -337,6 +375,68 @@ def test_reanalyze_is_a_404_when_the_image_is_missing_or_busy(
             "message": "Image not found, or its analysis is already running.",
         }
     }
+
+
+# --- shared galleries ----------------------------------------------------------------------
+
+
+def test_a_page_of_the_callers_own_images_reads_no_shares(
+    client: TestClient, repo: AsyncMock, store: AsyncMock, shares: AsyncMock
+) -> None:
+    record = make_record(1)
+    repo.list.return_value = Page(items=[record], next_offset=None)
+    store.signed_urls.return_value = signed_thumbnails(record)
+
+    response = client.get("/api/v1/images")
+
+    assert response.json()["items"][0]["shared_by"] is None
+    shares.list.assert_not_awaited()
+
+
+def test_an_image_from_a_shared_gallery_names_its_owner(
+    client: TestClient, repo: AsyncMock, store: AsyncMock, shares: AsyncMock
+) -> None:
+    own, shared = make_record(2), friends_record(1)
+    repo.list.return_value = Page(items=[own, shared], next_offset=None)
+    store.signed_urls.return_value = signed_thumbnails(own, shared)
+    shares.list.return_value = [accepted_share_from_friend()]
+
+    response = client.get("/api/v1/images")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [(item["id"], item["shared_by"]) for item in items] == [
+        (2, None),
+        (1, "friend@example.test"),
+    ]
+    assert items[1]["thumbnail_url"] == signed(shared.thumbnail_path)
+
+
+def test_the_detail_of_a_shared_image_names_its_owner(
+    client: TestClient, repo: AsyncMock, store: AsyncMock, shares: AsyncMock
+) -> None:
+    shared = friends_record(5)
+    repo.get.return_value = shared
+    store.signed_urls.return_value = {}
+    shares.list.return_value = [accepted_share_from_friend()]
+
+    response = client.get("/api/v1/images/5")
+
+    assert response.status_code == 200
+    assert response.json()["shared_by"] == "friend@example.test"
+
+
+def test_an_image_whose_share_just_ended_is_a_404(
+    client: TestClient, repo: AsyncMock, store: AsyncMock, shares: AsyncMock
+) -> None:
+    # The image was read while the share stood, and the share was revoked before the next read.
+    repo.get.return_value = friends_record(5)
+
+    response = client.get("/api/v1/images/5")
+
+    assert response.status_code == 404
+    assert response.json() == NOT_FOUND
+    store.signed_urls.assert_not_awaited()
 
 
 # --- authentication ------------------------------------------------------------------------
